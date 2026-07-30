@@ -49,12 +49,12 @@ OLLAMA_PROXY_PORT="${OLLAMA_PROXY_PORT:-8101}"
 # (how install-token-meter.sh starts only the backends it discovered); UNSET → default.
 OLLAMA_UPSTREAM_URL="${OLLAMA_UPSTREAM_URL-http://${UPSTREAM_HOST}:${OLLAMA_PORT}}"
 VLLM_UPSTREAM_URL="${VLLM_UPSTREAM_URL-http://${UPSTREAM_HOST}:${VLLM_PORT}}"
-# Optional per-model/-source HEC routing table (see configure-token-meter-routes.sh).
-# When present, the proxy ships each call's metric to the destination the table selects;
-# HEC_URL/HEC_TOKEN above stay as the fallback default. Empty when the file is absent.
+# Optional HEC destination file (written by configure-token-meter-routes.sh). When present,
+# the proxy ships metrics to the Splunk it names (e.g. the GPU host -> search head); when
+# absent, the HEC_URL/HEC_TOKEN above are used directly.
 HEC_ROUTES_FILE="${HEC_ROUTES_FILE:-/opt/splunk-ai/token-meter-routes.json}"
 [[ -f "${HEC_ROUTES_FILE}" ]] || HEC_ROUTES_FILE=""
-[[ -n "${HEC_ROUTES_FILE}" ]] && log "Using HEC routing table ${HEC_ROUTES_FILE}"
+[[ -n "${HEC_ROUTES_FILE}" ]] && log "Using HEC destination file ${HEC_ROUTES_FILE}"
 # Source label recorded on each metric (AITK doesn't forward Splunk's user/app to the model).
 DEFAULT_APP="${DEFAULT_APP:-Splunk_ML_Toolkit}"
 

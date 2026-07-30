@@ -228,7 +228,7 @@ except Exception: print("")' 2>/dev/null)"
 fi
 
 # 6. Restart BOTH metering proxies (vLLM :8100 + Ollama :8101) so they pick up the aligned
-#    HEC token/index and the routing table. Delegate to start-token-meter-proxies.sh (the
+#    HEC token/index and the destination file. Delegate to start-token-meter-proxies.sh (the
 #    single source of truth for how the proxies are launched — correct upstreams, keys,
 #    HEC_ROUTES_FILE) instead of hand-rolling one backend here.
 START_PROXIES="${SCRIPT_DIR}/token-meter/start-token-meter-proxies.sh"

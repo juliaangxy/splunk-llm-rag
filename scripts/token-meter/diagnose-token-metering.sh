@@ -25,11 +25,11 @@ for u in token-meter-ollama token-meter-vllm; do
     | sed -E 's/(HEC_TOKEN=).{6}.*/\1<redacted-6+>/'
 done
 
-hr "routing table (${ROUTES})"
+hr "HEC destination file (${ROUTES})"
 if [[ -f "${ROUTES}" ]]; then
   sed -E 's/("hec_token": ").{6}[^"]*/\1<redacted>/' "${ROUTES}"
 else
-  echo "(no routes file — proxy is in single-HEC mode using HEC_URL/HEC_TOKEN above)"
+  echo "(no destination file — proxy uses HEC_URL/HEC_TOKEN from env above)"
 fi
 
 hr "local token-meter.env (${ENVF})"
@@ -50,11 +50,8 @@ if os.path.exists(routes_path):
         d = cfg.get("default") or {}
         if d.get("hec_url"):
             targets.append((d["hec_url"], d.get("hec_token",""), d.get("hec_index","token_metrics"), "default"))
-        for i, r in enumerate(cfg.get("routes") or []):
-            targets.append((r.get("hec_url",""), r.get("hec_token",""), r.get("hec_index","token_metrics"),
-                            f"route[{r.get('match_field')}={r.get('match_value')}]"))
     except Exception as e:
-        print("could not parse routes file:", e)
+        print("could not parse destination file:", e)
 
 if not targets and os.path.exists(envf):
     env = dict(l.strip().split("=",1) for l in open(envf) if "=" in l)

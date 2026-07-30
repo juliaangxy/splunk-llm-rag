@@ -32,10 +32,11 @@ optional tag-based routing — see *Advanced*).
 | `scripts/token-meter/install-token-meter.sh` | **required** (entrypoint) | The one command you run — discovers the model backends, calls `11`, starts the right proxies. |
 | `scripts/token-meter/start-token-meter-proxies.sh` | **required** | Launches the vLLM/Ollama metering proxies (systemd units) in front of the models. |
 | `token-meter-proxy/app.py` | **required** | The reverse proxy itself — reads token usage from each response and posts it to HEC. |
-| `scripts/token-meter/configure-token-meter-routes.sh` | optional | Only for **routing** — sending different models'/sources' metrics to different Splunk instances. A single-Splunk install doesn't need it. |
-| `scripts/token-meter/refresh-token-meter-routes.sh` | optional | Self-heal timer for the routing table (re-resolves peer IPs). Only with routing. |
-| `scripts/token-meter/aws-helpers.sh` | optional | AWS-only IMDS + tag→IP lookup, used **solely** by the two routing scripts. Inert off AWS. |
+| `scripts/token-meter/configure-token-meter-routes.sh` | optional | Picks **which Splunk** the metrics ship to (this host vs. a remote/search-head), resolving a role to an IP. A standalone single-Splunk install doesn't need it. |
+| `scripts/token-meter/refresh-token-meter-routes.sh` | optional | Self-heal timer for that destination (re-resolves the peer IP). Only used with the script above. |
+| `scripts/token-meter/aws-helpers.sh` | optional | AWS-only IMDS + tag→IP lookup, used **solely** by the two scripts above. Inert off AWS. |
 | `scripts/token-meter/diagnose-token-metering.sh` | optional | Read-only troubleshooter (probes proxy → HEC → index). Handy if metrics don't show up. |
+| `scripts/token-meter/uninstall-token-meter.sh` | optional | Reverses the install — stops/removes the proxies + timer and staged files. `--purge-splunk` also drops the index/HEC/dashboard. |
 
 **Bare minimum for a basic install:** `common.sh`, `11-token-metrics.sh`, `install-token-meter.sh`, `start-token-meter-proxies.sh`, `app.py`. The rest are optional (routing / diagnostics) — but the copy step below grabs the whole `token-meter/` folder, so you get them all with no downside.
 
@@ -54,7 +55,9 @@ optional tag-based routing — see *Advanced*).
 # --- connection to the Splunk host (skip if you'll run the installer directly on the host) ---
 HOST=<splunk-host-ip-or-dns>
 USER=<your-ssh-login>          # ec2-user / ubuntu / root / ... whatever logs into HOST
-KEY=                           # path to an SSH private key (e.g. ~/.ssh/id_rsa); leave EMPTY for agent/password auth
+KEY="$HOME/.ssh/your-key.pem"  # SSH private key; set KEY="" for agent/password auth
+#   Use STRAIGHT quotes " " (NOT smart quotes “ ”) and $HOME (NOT ~, which stays literal
+#   inside quotes). A mangled key path is the #1 cause of "Permission denied (publickey)".
 
 # --- what to install ---
 ADMIN_PW='YOUR_SPLUNK_ADMIN_PASSWORD'
@@ -63,9 +66,18 @@ MODEL_HOST=localhost           # where Ollama/vLLM run (localhost, or another ho
 # optional flags for Step 2 if you need them:
 #   --ollama-proxy-port 8101  --vllm-proxy-port 8100  --ollama-port 11434  --vllm-port 8001
 
-# derived SSH options — adds `-i <key>` only when KEY is set; used by the copy commands below
-SSHOPTS="-o StrictHostKeyChecking=accept-new"; [ -n "$KEY" ] && SSHOPTS="-i $KEY $SSHOPTS"
+# SSH auth, rebuilt fresh each time you run this block (so no stale value can creep in).
+# IDENT holds `-i <key>` only when KEY is set; pass "${IDENT[@]}" $O on every ssh/scp below.
+IDENT=(); O="-o StrictHostKeyChecking=accept-new"
+[ -n "$KEY" ] && { chmod 600 "$KEY"; IDENT=(-i "$KEY"); }
+
+# Verify the connection BEFORE copying — this must print "connected as <USER>":
+ssh "${IDENT[@]}" $O "$USER@$HOST" 'echo connected as $(whoami)'
 ```
+
+> If that check fails with `Permission denied (publickey)`: confirm `ls -l "$KEY"` shows the
+> real file (no stray `“ ”`), that `chmod 600 "$KEY"` ran, and that this key is the one paired
+> with `$USER` on the instance. Re-run the whole block above so `IDENT` is rebuilt cleanly.
 
 ---
 
@@ -78,11 +90,11 @@ cd <path-to-this-repo>
 # clears a stale host key if the host was rebuilt/restarted; harmless otherwise
 ssh-keygen -R "$HOST" 2>/dev/null || true
 
-scp $SSHOPTS scripts/common.sh scripts/11-token-metrics.sh "$USER@$HOST:/tmp/"
-scp $SSHOPTS -r scripts/token-meter "$USER@$HOST:/tmp/token-meter"
-scp $SSHOPTS token-meter-proxy/app.py "$USER@$HOST:/tmp/app.py"
+scp "${IDENT[@]}" $O scripts/common.sh scripts/11-token-metrics.sh "$USER@$HOST:/tmp/"
+scp "${IDENT[@]}" $O -r scripts/token-meter "$USER@$HOST:/tmp/token-meter"
+scp "${IDENT[@]}" $O token-meter-proxy/app.py "$USER@$HOST:/tmp/app.py"
 
-ssh $SSHOPTS "$USER@$HOST" 'sudo bash -s' <<'EOF'
+ssh "${IDENT[@]}" $O "$USER@$HOST" 'sudo bash -s' <<'EOF'
 mkdir -p /opt/splunk-ai/scripts/token-meter /opt/splunk-ai/token-meter-proxy
 cp /tmp/common.sh /tmp/11-token-metrics.sh /opt/splunk-ai/scripts/
 cp /tmp/token-meter/*.sh /opt/splunk-ai/scripts/token-meter/
@@ -106,15 +118,15 @@ EOF
 
 **Remote (over SSH):**
 ```bash
-ssh $SSHOPTS "$USER@$HOST" \
+ssh "${IDENT[@]}" $O "$USER@$HOST" \
   "sudo SPLUNK_ADMIN_PASSWORD='$ADMIN_PW' bash /opt/splunk-ai/scripts/token-meter/install-token-meter.sh \
      --metric-host $METRIC_HOST --model-host $MODEL_HOST"
 ```
 
-**Local (already on the host):**
+**Local (already on the host):** both hosts default to `localhost`, so a bare run does a
+same-host install — no flags needed:
 ```bash
-sudo SPLUNK_ADMIN_PASSWORD='YOUR_ADMIN_PW' bash /opt/splunk-ai/scripts/token-meter/install-token-meter.sh \
-  --metric-host localhost --model-host localhost
+sudo SPLUNK_ADMIN_PASSWORD='YOUR_ADMIN_PW' bash /opt/splunk-ai/scripts/token-meter/install-token-meter.sh
 ```
 
 The installer probes the model host, creates the `token_metrics` index + HEC (restarting
@@ -126,8 +138,8 @@ starts a proxy for each backend found. Watch for `SUCCESS ... searchable` and th
 
 | Flag | Required | Default | Meaning |
 |---|---|---|---|
-| `--metric-host` | ✅ | — | Splunk that stores metrics (its HEC). Local → creates index+HEC here (needs `SPLUNK_ADMIN_PASSWORD`); remote → also pass `--hec-token`. |
-| `--model-host` | ✅ | — | Host where Ollama/vLLM run (probed to auto-detect). |
+| `--metric-host` | | `localhost` | Splunk that stores metrics (its HEC). Local → creates index+HEC here (needs `SPLUNK_ADMIN_PASSWORD`); remote → also pass `--hec-token`. |
+| `--model-host` | | `localhost` | Host where Ollama/vLLM run (probed to auto-detect). |
 | `--ollama-proxy-port` / `--vllm-proxy-port` | | `8101` / `8100` | proxy listen ports clients call |
 | `--ollama-port` / `--vllm-port` | | `11434` / `8001` | model ports to probe/forward to |
 | `--hec-port` | | `8088` | Splunk HEC port |
@@ -166,6 +178,52 @@ Fields: `backend, model, prompt_tokens, completion_tokens, total_tokens, latency
 
 ---
 
+## Uninstall / reinstall (test the files on a host)
+
+`scripts/token-meter/uninstall-token-meter.sh` reverses the install. By default it's a
+**non-destructive** teardown of the proxy layer — it stops and removes the metering proxies
++ the self-heal timer and clears the runtime state (`token-meter.env` + destination file), but
+**leaves** the staged code (scripts + the proxy app under `/opt/splunk-ai/token-meter-proxy`)
+and the Splunk `token_metrics` index, data, HEC token, and dashboard, so a reinstall reuses them.
+
+```bash
+# preview what would be removed (no root needed, changes nothing)
+sudo bash /opt/splunk-ai/scripts/token-meter/uninstall-token-meter.sh --dry-run
+
+# stop the proxies + clear runtime state (keeps staged code + the Splunk index/data/dashboard)
+sudo bash /opt/splunk-ai/scripts/token-meter/uninstall-token-meter.sh
+
+# ALSO drop the index (INCLUDING data), HEC token, and dashboard app, then restart Splunk
+sudo SPLUNK_ADMIN_PASSWORD='YOUR_ADMIN_PW' \
+  bash /opt/splunk-ai/scripts/token-meter/uninstall-token-meter.sh --purge-splunk
+
+# ALSO delete the staged code (scripts + proxy app). Only do this if you'll re-copy before reinstalling.
+sudo bash /opt/splunk-ai/scripts/token-meter/uninstall-token-meter.sh --remove-scripts
+```
+
+> **Order matters for a clean reinstall.** `install-token-meter.sh` does **not** re-copy the
+> proxy `app.py` — it expects it already staged. So **uninstall first, then re-copy (Step 1),
+> then install**. (A default or `--purge-splunk` uninstall keeps the staged code, so copying
+> before uninstalling also works; but uninstall→copy→install is safe no matter which flags you use.)
+
+**Test a clean reinstall of the new files** (run the copy from your repo checkout, the rest over SSH):
+
+```bash
+# 1) full teardown first (uses the already-staged uninstaller; drop --purge-splunk to keep the index)
+ssh "${IDENT[@]}" $O "$USER@$HOST" \
+  "sudo SPLUNK_ADMIN_PASSWORD='$ADMIN_PW' bash /opt/splunk-ai/scripts/token-meter/uninstall-token-meter.sh --purge-splunk"
+
+# 2) re-copy the latest files (repeat Step 1's copy block) so app.py + scripts are freshly staged
+
+# 3) reinstall (bare run = same-host, all-local)
+ssh "${IDENT[@]}" $O "$USER@$HOST" \
+  "sudo SPLUNK_ADMIN_PASSWORD='$ADMIN_PW' bash /opt/splunk-ai/scripts/token-meter/install-token-meter.sh"
+
+# 4) verify (Step 4): fire a call through the proxy, then search index=token_metrics
+```
+
+---
+
 ## Advanced — run the pieces directly / custom endpoints
 
 The installer just orchestrates these:
@@ -179,10 +237,11 @@ The installer just orchestrates these:
        HEC_TOKEN="<token>" HEC_INDEX="token_metrics" PROXY_API_KEY="<key>" \
        bash token-meter/start-token-meter-proxies.sh
   ```
-- **Routing** (per model/source → a specific Splunk): `configure-token-meter-routes.sh`.
-  On-prem, use explicit `hec_host` per route (`TOKEN_METER_ROUTES` / `TOKEN_METER_DEFAULT_HOST`).
-  The `target_role` option (resolve a peer by an EC2 `SplunkAiRole` tag) is **AWS-only** —
-  ignore it on-prem.
+- **Destination** (which single Splunk gets the metrics): `configure-token-meter-routes.sh`.
+  Set `TOKEN_METER_DEFAULT_ROLE` (`self` | `search-head` | `gpu-host`) or an explicit
+  `TOKEN_METER_DEFAULT_HOST=<ip/host>`. Role→IP resolution uses the EC2 `SplunkAiRole` tag and
+  is **AWS-only** — on-prem, set `TOKEN_METER_DEFAULT_HOST` explicitly. (For a same-host install
+  you don't need this at all; the installer ships to the local HEC by default.)
 
 ## Gotchas (handled by the installer, but worth knowing)
 

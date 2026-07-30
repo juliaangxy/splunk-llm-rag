@@ -45,15 +45,11 @@ HEC_TOKEN = os.environ.get("HEC_TOKEN", "").strip()
 HEC_INDEX = os.environ.get("HEC_INDEX", "token_metrics")
 HEC_SOURCETYPE = os.environ.get("HEC_SOURCETYPE", "token_metrics")
 HEC_VERIFY_TLS = os.environ.get("HEC_VERIFY_TLS", "false").lower() == "true"
-# Optional routing table: a JSON file mapping request attributes (model/backend/app/...)
-# to a specific HEC destination+token, so one proxy can ship different models' usage to
-# different Splunk instances. When unset/absent, the single HEC_URL/HEC_TOKEN above is
-# used for everything (backwards compatible). Hot-reloaded on file mtime change. Schema:
-#   { "default": {"hec_url": "...", "hec_token": "...", "hec_index": "..."},
-#     "routes":  [ {"match_field":"model","match_value":"foundation-sec-8b",
-#                   "match_mode":"equals","hec_url":"...","hec_token":"...","hec_index":"..."} ] }
-# match_field is any event field (model, backend, app, user, path); match_mode is
-# equals (default) | contains | prefix. The first matching route wins, else default.
+# Optional HEC destination file: a JSON file naming which Splunk HEC (url/token/index) to
+# ship metrics to, so the destination can be resolved at deploy time (e.g. the GPU host
+# shipping its usage to the search head) without baking it into the systemd unit. When
+# unset/absent, the HEC_URL/HEC_TOKEN env above is used. Hot-reloaded on mtime change. Schema:
+#   { "default": {"hec_url": "...", "hec_token": "...", "hec_index": "..."} }
 HEC_ROUTES_FILE = os.environ.get("HEC_ROUTES_FILE", "").strip()
 PROXY_API_KEY = os.environ.get("PROXY_API_KEY", "").strip()
 REQUEST_TIMEOUT = float(os.environ.get("REQUEST_TIMEOUT", "600"))
@@ -85,24 +81,24 @@ def _default_route():
     return {"hec_url": HEC_URL, "hec_token": HEC_TOKEN, "hec_index": HEC_INDEX}
 
 
-_routes_lock = threading.Lock()
-_routes_cache = {"mtime": None, "default": _default_route(), "routes": []}
+_route_lock = threading.Lock()
+_route_cache = {"mtime": None, "default": _default_route()}
 
 
-def _load_routes():
-    """Return (default_route, routes_list), hot-reloading the JSON file on mtime change.
+def _load_default():
+    """Return the HEC destination, hot-reloading the JSON file on mtime change.
 
-    Falls back to the single HEC_URL/HEC_TOKEN default when no routes file is set or it
-    can't be read/parsed — a bad routes file must never stop metrics from flowing.
+    Falls back to the single HEC_URL/HEC_TOKEN default when no destination file is set or
+    it can't be read/parsed — a bad file must never stop metrics from flowing.
     """
     if not HEC_ROUTES_FILE:
-        return _default_route(), []
+        return _default_route()
     try:
         mtime = os.stat(HEC_ROUTES_FILE).st_mtime
     except OSError:
-        return _default_route(), []
-    with _routes_lock:
-        if _routes_cache["mtime"] != mtime:
+        return _default_route()
+    with _route_lock:
+        if _route_cache["mtime"] != mtime:
             try:
                 with open(HEC_ROUTES_FILE, encoding="utf-8") as fh:
                     cfg = json.load(fh) or {}
@@ -112,47 +108,18 @@ def _load_routes():
                     "hec_token": (d.get("hec_token") or HEC_TOKEN).strip(),
                     "hec_index": d.get("hec_index") or HEC_INDEX,
                 }
-                routes = []
-                for r in (cfg.get("routes") or []):
-                    routes.append({
-                        "field": str(r.get("match_field") or "model"),
-                        "value": str(r.get("match_value") or ""),
-                        "mode": str(r.get("match_mode") or "equals"),
-                        "hec_url": (r.get("hec_url") or default["hec_url"]).strip(),
-                        "hec_token": (r.get("hec_token") or default["hec_token"]).strip(),
-                        "hec_index": r.get("hec_index") or default["hec_index"],
-                    })
-                _routes_cache.update(mtime=mtime, default=default, routes=routes)
-                log(f"loaded {len(routes)} HEC route(s) from {HEC_ROUTES_FILE}")
+                _route_cache.update(mtime=mtime, default=default)
+                log(f"loaded HEC destination from {HEC_ROUTES_FILE}")
             except Exception as exc:  # noqa: BLE001 - never break metering on a bad file
-                log(f"WARN: failed to load routes {HEC_ROUTES_FILE}: {exc}; using default HEC")
-                _routes_cache.update(mtime=mtime, default=_default_route(), routes=[])
-        return _routes_cache["default"], list(_routes_cache["routes"])
-
-
-def pick_route(event):
-    """Choose the HEC destination for an event: first matching route, else default."""
-    default, routes = _load_routes()
-    for r in routes:
-        val = str(event.get(r["field"], ""))
-        want = r["value"]
-        if not want:
-            continue
-        if r["mode"] == "contains":
-            hit = want in val
-        elif r["mode"] == "prefix":
-            hit = val.startswith(want)
-        else:
-            hit = val == want
-        if hit:
-            return r
-    return default
+                log(f"WARN: failed to load {HEC_ROUTES_FILE}: {exc}; using default HEC")
+                _route_cache.update(mtime=mtime, default=_default_route())
+        return _route_cache["default"]
 
 
 def send_to_hec(event, route=None):
     """Ship one metric event to Splunk HEC (best-effort, off the response path)."""
     if route is None:
-        route = pick_route(event)
+        route = _load_default()
     hec_url = route.get("hec_url") or ""
     hec_token = route.get("hec_token") or ""
     hec_index = route.get("hec_index") or HEC_INDEX
@@ -363,11 +330,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    _dflt, _routes = _load_routes()
-    routing = f"routes={len(_routes)} from {HEC_ROUTES_FILE}" if HEC_ROUTES_FILE else "single-HEC"
+    _dflt = _load_default()
+    dest = HEC_ROUTES_FILE if HEC_ROUTES_FILE else "env"
     log(f"token-meter-proxy -> upstream={UPSTREAM_URL} label={BACKEND_LABEL} "
         f"listen={LISTEN_PORT} hec={'on' if _dflt.get('hec_url') else 'off'} "
-        f"index={_dflt.get('hec_index')} routing={routing}")
+        f"index={_dflt.get('hec_index')} dest={dest}")
     server = ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Handler)
     server.serve_forever()
 

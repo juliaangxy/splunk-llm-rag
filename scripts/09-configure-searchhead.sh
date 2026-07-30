@@ -175,11 +175,10 @@ configure_dsdl_endpoint
 # point AITK straight at the GPU host's models.
 if [[ "${DEPLOY_TOKEN_METER_PROXY:-false}" == "true" ]]; then
   log "DEPLOY_TOKEN_METER_PROXY=true; starting local token-metering proxies (upstream ${GPU_HOST})"
-  # Generate the HEC routing table first so this instance's proxy ships metrics to the
+  # Generate the HEC destination file first so this instance's proxy ships metrics to the
   # configured target (default: the search head itself, i.e. its own local HEC).
-  TOKEN_METER_ROUTES="${TOKEN_METER_ROUTES:-[]}" \
   TOKEN_METER_DEFAULT_ROLE="${TOKEN_METER_DEFAULT_ROLE:-search-head}" \
-    bash "${SCRIPT_DIR}/token-meter/configure-token-meter-routes.sh" || warn "token-meter route generation failed (non-fatal); using single-HEC default"
+    bash "${SCRIPT_DIR}/token-meter/configure-token-meter-routes.sh" || warn "token-meter destination generation failed (non-fatal); using single-HEC default"
   UPSTREAM_HOST="${GPU_HOST}" bash "${SCRIPT_DIR}/token-meter/start-token-meter-proxies.sh" || warn "token-meter proxy start failed (non-fatal)"
   bash "${SCRIPT_DIR}/configure-splunk-llm.sh" --mode proxy || warn "configure-splunk-llm.sh (proxy) failed"
 else

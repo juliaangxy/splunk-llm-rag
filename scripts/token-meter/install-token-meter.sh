@@ -7,17 +7,17 @@ set -euo pipefail
 #   2. sets up the token_metrics index + HEC on --metric-host (or ships to a remote one), and
 #   3. starts a metering proxy in front of each discovered backend.
 #
-# Usage:
-#   sudo ./install-token-meter.sh --metric-host <splunk-hec-host> --model-host <model-host> \
+# Usage (a bare run does a same-host, all-local install):
+#   sudo ./install-token-meter.sh [--metric-host <splunk-host>] [--model-host <model-host>] \
 #        [--ollama-proxy-port 8101] [--vllm-proxy-port 8100] \
 #        [--ollama-port 11434] [--vllm-port 8001] [--hec-port 8088] [--hec-token <token>]
 #
-# Mandatory:
-#   --metric-host   Splunk instance that stores the metrics (its HEC). If this is the LOCAL
-#                   Splunk, the index + HEC token are created here (needs SPLUNK_ADMIN_PASSWORD
-#                   in the environment). If it's a REMOTE Splunk, also pass --hec-token for a
+# Hosts (both default to localhost):
+#   --metric-host   Splunk instance that stores the metrics (its HEC). Default localhost:
+#                   the index + HEC token are created here (needs SPLUNK_ADMIN_PASSWORD in
+#                   the environment). For a REMOTE Splunk, pass its host + --hec-token for a
 #                   token already registered there (run this installer on that host first).
-#   --model-host    Host where Ollama and/or vLLM run. Probed to auto-detect what's up.
+#   --model-host    Host where Ollama and/or vLLM run (default localhost). Probed to auto-detect.
 #
 # Optional:
 #   --ollama-proxy-port / --vllm-proxy-port   proxy LISTEN ports clients call (default 8101 / 8100)
@@ -31,7 +31,7 @@ require_root
 
 usage() { sed -n '3,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
-METRIC_HOST=""; MODEL_HOST=""
+METRIC_HOST="localhost"; MODEL_HOST="localhost"   # same-host install by default; override for remote
 OLLAMA_PORT=11434; VLLM_PORT=8001
 OLLAMA_PROXY_PORT=8101; VLLM_PROXY_PORT=8100
 HEC_PORT=8088; HEC_TOKEN_ARG=""
@@ -51,8 +51,9 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown argument: $1" >&2; usage; exit 2;;
   esac
 done
+# --metric-host / --model-host default to localhost above; a bare run does a same-host install.
 if [[ -z "${METRIC_HOST}" || -z "${MODEL_HOST}" ]]; then
-  echo "ERROR: --metric-host and --model-host are required" >&2; usage; exit 2
+  echo "ERROR: --metric-host / --model-host cannot be empty" >&2; usage; exit 2
 fi
 
 is_local_host() {

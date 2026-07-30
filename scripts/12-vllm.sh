@@ -110,11 +110,10 @@ stage_token_meter_proxy
 
 if [[ "${DEPLOY_TOKEN_METER_PROXY}" == "true" ]]; then
   log "DEPLOY_TOKEN_METER_PROXY=true; starting the token-metering proxies now"
-  # Generate the HEC routing table first (defaults to shipping usage to the search head)
+  # Generate the HEC destination file first (defaults to shipping usage to the search head)
   # so the proxies come up already pointing metrics at the chosen Splunk instance.
-  TOKEN_METER_ROUTES="${TOKEN_METER_ROUTES:-[]}" \
   TOKEN_METER_DEFAULT_ROLE="${TOKEN_METER_DEFAULT_ROLE:-search-head}" \
-    bash "${SCRIPT_DIR}/token-meter/configure-token-meter-routes.sh" || warn "token-meter route generation failed (non-fatal); using single-HEC default"
+    bash "${SCRIPT_DIR}/token-meter/configure-token-meter-routes.sh" || warn "token-meter destination generation failed (non-fatal); using single-HEC default"
   bash "${SCRIPT_DIR}/token-meter/start-token-meter-proxies.sh"
   bash "${SCRIPT_DIR}/configure-splunk-llm.sh" --mode proxy || true
 else

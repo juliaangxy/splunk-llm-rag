@@ -223,53 +223,42 @@ Two consequences worth knowing:
 - **You cannot attribute a call to "who started it."** AITK forwards no Splunk user/app/origin
   into the model HTTP call, so container-dispatched calls all look identical at the proxy.
 - **The metric is decoupled from the model traffic.** The HEC event is a tiny POST that the proxy
-  can send to *any* Splunk instance, independent of where the model runs. That's the routing knob
-  below. By default the deploy points it at the **search head**, so all usage lands in one index
-  there — without hair-pinning the heavy model traffic.
+  can send to *any* Splunk instance, independent of where the model runs. That's the destination
+  knob below. By default the deploy points it at the **search head**, so all usage lands in one
+  index there — without hair-pinning the heavy model traffic.
 
-### Fine-grained routing (per model / source)
+### Where token usage lands (destination)
 
-Routing is controlled by two CloudFormation params (set in `config/<env>.json`), applied
+The destination is controlled by one CloudFormation param (set in `config/<env>.json`), applied
 automatically at deploy time — the bootstrap runs `configure-token-meter-routes.sh` before
 starting the proxies:
 
 | Param | Default | Meaning |
 |---|---|---|
-| `TokenMeterDefaultRole` | `search-head` | Where **unmatched** usage goes: `search-head` \| `gpu-host` \| `self`. |
-| `TokenMeterRoutesJson` | `[]` | Array of routing rules; the **first match wins**, else the default. |
+| `TokenMeterDefaultRole` | `search-head` | Which Splunk stores all usage: `search-head` \| `gpu-host` \| `self` (the instance that generated it). |
 
-Each rule in `TokenMeterRoutesJson` is an object:
+The role is resolved to a private IP automatically via the instance's `SplunkAiRole` tag
+(`ec2:DescribeInstances`), so no IPs are hard-coded. The default `search-head` puts all usage
+(from both instances) in one index on the search head.
 
-```jsonc
-{
-  "match_field": "model",        // model | backend | app | user | path
-  "match_value": "foundation-sec-8b",
-  "match_mode":  "equals",       // equals (default) | contains | prefix
-  "target_role": "search-head",  // search-head | gpu-host | self
-  "hec_host":    "10.0.1.9",      // optional: explicit host, overrides target_role
-  "hec_token":   "…"              // optional: per-destination token, else the shared one
-}
-```
+> A `TokenMeterRoutesJson` param still exists in the templates for backward compatibility but is
+> **inert** — per-model/-source routing was removed because it couldn't be tested end-to-end.
+> Leave it `[]`.
 
-`target_role` is resolved to a private IP automatically via the instance's `SplunkAiRole` tag
-(`ec2:DescribeInstances`), so no IPs are hard-coded. Example — send Ollama's `foundation-sec-8b`
-usage to the search head but keep the vLLM Granite model's usage on the GPU host, in
-`config/cloud.json` (note the escaped quotes, same as `OllamaModelsJson`):
-
-```json
-{ "ParameterKey": "TokenMeterDefaultRole", "ParameterValue": "gpu-host" },
-{ "ParameterKey": "TokenMeterRoutesJson",
-  "ParameterValue": "[{\"match_field\":\"model\",\"match_value\":\"foundation-sec-8b\",\"target_role\":\"search-head\"}]" }
-```
-
-**Apply on a running instance (no redeploy):** the routing table lives at
-`/opt/splunk-ai/token-meter-routes.json`; regenerate it and restart the proxies on the GPU host:
+**Apply on a running instance (no redeploy):** the destination lives at
+`/opt/splunk-ai/token-meter-routes.json`; regenerate it and restart the proxies:
 
 ```bash
 sudo TOKEN_METER_DEFAULT_ROLE=search-head \
-     TOKEN_METER_ROUTES='[{"match_field":"model","match_value":"foundation-sec-8b","target_role":"search-head"}]' \
   /opt/splunk-ai/scripts/token-meter/configure-token-meter-routes.sh
 sudo /opt/splunk-ai/scripts/token-meter/start-token-meter-proxies.sh   # re-run; a plain systemctl restart won't reload env
+```
+
+**On-prem / no AWS tags:** set an explicit host instead of a role:
+
+```bash
+sudo TOKEN_METER_DEFAULT_HOST=10.0.1.9 \
+  /opt/splunk-ai/scripts/token-meter/configure-token-meter-routes.sh
 ```
 
 **Token caveat:** shipping a metric to another instance's HEC requires the token that instance

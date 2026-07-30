@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Don't clobber a SCRIPT_DIR the sourcing script already set — otherwise a script in a
+# subfolder (e.g. scripts/token-meter/) that sources this file would have its SCRIPT_DIR
+# reset to scripts/, breaking any sibling paths it builds afterward. common.sh itself never
+# uses SCRIPT_DIR, so preserving the caller's value here is safe.
+SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 STATE_DIR="/var/lib/splunk-ai"
 BOOTSTRAP_ENV_FILE="${BOOTSTRAP_ENV_FILE:-/opt/splunk-ai/bootstrap.env}"
 # Secrets fetched from Secrets Manager by fetch-secrets.sh (never baked into CFN).
