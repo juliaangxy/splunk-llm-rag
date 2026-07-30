@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Offline pre-deploy gate for the platform/ project. Runs everything that does NOT
+# Offline pre-deploy gate for this project. Runs everything that does NOT
 # need AWS: shell syntax, Python compile, JSON validity, CloudFormation lint, and the
 # cross-stack parameter checks. Safe to run anywhere (CI or laptop). Exits non-zero on
 # any hard failure so it can gate a deploy.

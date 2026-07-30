@@ -1,3 +1,0 @@
-# Never commit real secret files; only the *.env.example templates are tracked.
-config/*.env
-!config/*.env.example

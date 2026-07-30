@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Deploy the Splunk AI platform for one environment (cloud | airgapped).
 #
-#   ./platform/deploy.sh <cloud|airgapped> <region> [ami-id]
+#   ./deploy.sh <cloud|airgapped> <region> [ami-id]
 #
 # Assumes the aws CLI is already authenticated (SSO / aws login) in this shell.
 # Flow:
@@ -13,7 +13,9 @@ set -euo pipefail
 #   4. Package + deploy the per-environment stack (SGs, GPU host, search head, scheduler).
 
 PLATFORM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${PLATFORM_DIR}/.." && pwd)"
+# Repo is now flat (deploy.sh + scripts/ + utils/ + config/ all at root), so REPO_ROOT
+# and PLATFORM_DIR are the same directory.
+REPO_ROOT="${PLATFORM_DIR}"
 CFN_DIR="${PLATFORM_DIR}/cloudformation"
 
 usage() {

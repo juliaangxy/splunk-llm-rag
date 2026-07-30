@@ -397,7 +397,7 @@ ensure_state_dir() {
   mkdir -p "${STATE_DIR}"
 }
 
-# --- Airgap helpers (platform/ additions) --------------------------------
+# --- Airgap helpers --------------------------------
 # When AIRGAPPED=true, all container images must be pre-seeded into ECR and
 # pulled from there (never Docker Hub / public registries), and internet-only
 # fallbacks are disabled.

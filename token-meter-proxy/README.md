@@ -17,7 +17,7 @@ every call's real token counts land in `index=token_metrics`.
 ## Build
 
 ```bash
-docker build -t token-meter-proxy:latest platform/token-meter-proxy
+docker build -t token-meter-proxy:latest token-meter-proxy
 ```
 
 ## Run

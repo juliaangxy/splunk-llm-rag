@@ -6,7 +6,7 @@ set -euo pipefail
 # laptop. It uploads the package to the apps bucket (so future deploys install it too),
 # then installs it on both instances via SSM and restarts Splunk.
 #
-#   ./platform/scripts/install-saia.sh
+#   ./scripts/install-saia.sh
 #
 # Overridable env: REGION, STACK (per-env main stack), APP_FILE (repo-relative),
 #   RESOURCE_NAME_PREFIX, APPS_LICENSE_BUCKET (skip stack lookup if set).
@@ -20,7 +20,7 @@ REGION="${REGION:-ap-southeast-1}"
 STACK="${STACK:-splunk-ai-cloud}"
 PREFIX="${RESOURCE_NAME_PREFIX:-splunk-ai}"
 APP_FILE="${APP_FILE:-apps/splunk-ai-assistant_220.tgz}"
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 command -v aws >/dev/null 2>&1 || { echo "ERROR: aws CLI required" >&2; exit 1; }
 [[ -f "${REPO_ROOT}/${APP_FILE}" ]] || { echo "ERROR: not found: ${REPO_ROOT}/${APP_FILE}" >&2; exit 1; }
