@@ -167,6 +167,10 @@ What deployment sets up automatically:
 - The **token-metering proxy image** is staged (pulled to the GPU host) but **not started**.
 
 ### How token counting works
+> **Adding metering to a deployment that already runs Ollama/vLLM + Splunk (outside this
+> platform)?** See **[TOKEN-METERING-INSTALL.md](TOKEN-METERING-INSTALL.md)** — a
+> standalone guide using `11-token-metrics.sh` + `start-token-meter-proxies.sh`.
+
 A tiny [token-meter proxy](token-meter-proxy/README.md) sits in front of a model server,
 reads the real `usage` the server returns (OpenAI `usage`, Ollama `prompt_eval_count`/
 `eval_count`; streaming handled), and ships one event per call to `index=token_metrics`.
