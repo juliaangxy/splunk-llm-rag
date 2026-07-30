@@ -1,37 +1,54 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Start the token-metering proxies in front of vLLM and Ollama on the GPU host.
-# NOT run automatically during deployment — run this when you want token counting on.
-# After starting, point Splunk at the proxies:  sudo ./configure-splunk-llm.sh --mode proxy
+# Start the token-metering proxies in front of vLLM and/or Ollama.
+# Usually invoked by install-token-meter.sh; run directly to (re)start with custom endpoints.
+# After starting, point clients/AITK at the proxies (or: ./configure-splunk-llm.sh --mode proxy).
 #
-# Reads HEC settings from /opt/splunk-ai/token-meter.env (written by 11-token-metrics.sh).
+# Reads HEC settings from /opt/splunk-ai/token-meter.env (written by 11-token-metrics.sh);
+# env values (HEC_URL/HEC_TOKEN, OLLAMA_UPSTREAM_URL/VLLM_UPSTREAM_URL) override the file.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/common.sh"
+source "${SCRIPT_DIR}/../common.sh"
 
 require_root
 
+# --- User-definable endpoints -------------------------------------------------
+# Both the MODEL base URLs (what the proxy forwards to) and the METRIC RECEIVER
+# (Splunk HEC) can be set via env, so the proxy, the models, and Splunk can each
+# live anywhere. Env values WIN over token-meter.env.
+#   Models   : OLLAMA_UPSTREAM_URL / VLLM_UPSTREAM_URL   (full base URLs), or the
+#              older UPSTREAM_HOST + OLLAMA_PORT / VLLM_PORT (host+port) shorthand.
+#   Receiver : HEC_URL / HEC_TOKEN / HEC_INDEX  (the Splunk HTTP Event Collector).
 METER_ENV_FILE="${METER_ENV_FILE:-/opt/splunk-ai/token-meter.env}"
+# Capture env-provided overrides BEFORE sourcing the file so they take precedence.
+_ov_HEC_URL="${HEC_URL:-}"; _ov_HEC_TOKEN="${HEC_TOKEN:-}"; _ov_HEC_INDEX="${HEC_INDEX:-}"
+_ov_PROXY_API_KEY="${PROXY_API_KEY:-}"
 if [[ -f "${METER_ENV_FILE}" ]]; then
   # shellcheck disable=SC1090
   set -a; source "${METER_ENV_FILE}"; set +a
 fi
+# Env override > token-meter.env value > default.
+HEC_URL="${_ov_HEC_URL:-${HEC_URL:-}}"
+HEC_TOKEN="${_ov_HEC_TOKEN:-${HEC_TOKEN:-}}"
+HEC_INDEX="${_ov_HEC_INDEX:-${HEC_INDEX:-token_metrics}}"
+PROXY_API_KEY="${_ov_PROXY_API_KEY:-${PROXY_API_KEY:-}}"
 
 TOKEN_METER_PROXY_IMAGE="${TOKEN_METER_PROXY_IMAGE:-token-meter-proxy:latest}"
-# Where the models actually run. On the GPU host this is loopback; on the search head
-# set it to the GPU host's IP (GPU_HOST is exported into bootstrap.env there) so the
-# LOCAL proxy forwards to the remote models but still ships metrics to the LOCAL HEC —
-# i.e. usage is recorded on whichever instance initiated the call.
+# Model host+port — used only to CONSTRUCT the default upstream URLs below. Set UPSTREAM_HOST
+# to the model host's address when the models run elsewhere; defaults to loopback. (GPU_HOST
+# is honored as a fallback for the AWS platform, where its search head exports it.)
 UPSTREAM_HOST="${UPSTREAM_HOST:-${GPU_HOST:-127.0.0.1}}"
 VLLM_PORT="${VLLM_PORT:-8001}"
 OLLAMA_PORT="${OLLAMA_PORT:-11434}"
 VLLM_PROXY_PORT="${VLLM_PROXY_PORT:-8100}"
 OLLAMA_PROXY_PORT="${OLLAMA_PROXY_PORT:-8101}"
-HEC_URL="${HEC_URL:-}"
-HEC_TOKEN="${HEC_TOKEN:-}"
-HEC_INDEX="${HEC_INDEX:-token_metrics}"
-PROXY_API_KEY="${PROXY_API_KEY:-}"
+# Full model base URLs the proxy forwards to. Set these directly for a non-default
+# scheme/host/path/port; otherwise built from UPSTREAM_HOST + the ports above. Note the
+# single-dash `-` (not `:-`): an explicitly EMPTY value is preserved and SKIPS that proxy
+# (how install-token-meter.sh starts only the backends it discovered); UNSET → default.
+OLLAMA_UPSTREAM_URL="${OLLAMA_UPSTREAM_URL-http://${UPSTREAM_HOST}:${OLLAMA_PORT}}"
+VLLM_UPSTREAM_URL="${VLLM_UPSTREAM_URL-http://${UPSTREAM_HOST}:${VLLM_PORT}}"
 # Optional per-model/-source HEC routing table (see configure-token-meter-routes.sh).
 # When present, the proxy ships each call's metric to the destination the table selects;
 # HEC_URL/HEC_TOKEN above stay as the fallback default. Empty when the file is absent.
@@ -86,8 +103,18 @@ run_proxy() {
 # vLLM/OpenAI: AITK sends llm_openai_api_key as a Bearer token, so require it.
 # Ollama: clients (incl. AITK's Ollama provider) send no key, so run the proxy keyless
 # — requiring a key here would 401 every Ollama call and record nothing.
-run_proxy "token-meter-vllm"   "${VLLM_PROXY_PORT}"   "http://${UPSTREAM_HOST}:${VLLM_PORT}"   "vllm"   "${PROXY_API_KEY}"
-run_proxy "token-meter-ollama" "${OLLAMA_PROXY_PORT}" "http://${UPSTREAM_HOST}:${OLLAMA_PORT}" "ollama" ""
+if [[ -n "${VLLM_UPSTREAM_URL}" ]]; then
+  run_proxy "token-meter-vllm" "${VLLM_PROXY_PORT}" "${VLLM_UPSTREAM_URL}" "vllm" "${PROXY_API_KEY}"
+else
+  log "VLLM_UPSTREAM_URL empty — skipping vLLM proxy"
+  systemctl stop token-meter-vllm 2>/dev/null || true
+fi
+if [[ -n "${OLLAMA_UPSTREAM_URL}" ]]; then
+  run_proxy "token-meter-ollama" "${OLLAMA_PROXY_PORT}" "${OLLAMA_UPSTREAM_URL}" "ollama" ""
+else
+  log "OLLAMA_UPSTREAM_URL empty — skipping Ollama proxy"
+  systemctl stop token-meter-ollama 2>/dev/null || true
+fi
 
 log "Token-metering proxies running (vLLM :${VLLM_PROXY_PORT}, Ollama :${OLLAMA_PROXY_PORT})."
 log "Now point Splunk at them:  sudo ${SCRIPT_DIR}/configure-splunk-llm.sh --mode proxy"

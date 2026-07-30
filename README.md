@@ -181,7 +181,7 @@ with the models (and portable enough to hand to someone else for their GPU/CPU b
 ### Turn on token counting (2 steps, on the GPU host)
 ```bash
 # 1. Start the proxies (vLLM -> :8100, Ollama -> :8101), sending to token_metrics:
-sudo /opt/splunk-ai/scripts/start-token-meter-proxies.sh
+sudo /opt/splunk-ai/scripts/token-meter/start-token-meter-proxies.sh
 # 2. Point Splunk at the proxies (run on BOTH instances), then reload DSDL:
 sudo /opt/splunk-ai/scripts/configure-splunk-llm.sh --mode proxy
 ```
@@ -268,8 +268,8 @@ usage to the search head but keep the vLLM Granite model's usage on the GPU host
 ```bash
 sudo TOKEN_METER_DEFAULT_ROLE=search-head \
      TOKEN_METER_ROUTES='[{"match_field":"model","match_value":"foundation-sec-8b","target_role":"search-head"}]' \
-  /opt/splunk-ai/scripts/configure-token-meter-routes.sh
-sudo /opt/splunk-ai/scripts/start-token-meter-proxies.sh   # re-run; a plain systemctl restart won't reload env
+  /opt/splunk-ai/scripts/token-meter/configure-token-meter-routes.sh
+sudo /opt/splunk-ai/scripts/token-meter/start-token-meter-proxies.sh   # re-run; a plain systemctl restart won't reload env
 ```
 
 **Token caveat:** shipping a metric to another instance's HEC requires the token that instance

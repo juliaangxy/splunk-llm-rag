@@ -12,7 +12,7 @@ rc=0
 note() { echo "[validate] $*"; }
 
 note "1/6 shell syntax (bash -n)"
-for f in deploy.sh validate.sh scripts/*.sh; do bash -n "$f" || { echo "FAIL bash -n $f"; rc=1; }; done
+for f in deploy.sh validate.sh scripts/*.sh scripts/token-meter/*.sh; do bash -n "$f" || { echo "FAIL bash -n $f"; rc=1; }; done
 
 note "2/6 python compile"
 for f in scripts/*.py token-meter-proxy/app.py; do python3 -m py_compile "$f" || { echo "FAIL py_compile $f"; rc=1; }; done

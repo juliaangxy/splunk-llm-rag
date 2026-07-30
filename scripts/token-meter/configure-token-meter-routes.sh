@@ -26,7 +26,8 @@ set -euo pipefail
 #   sudo ./configure-token-meter-routes.sh && sudo ./start-token-meter-proxies.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/common.sh"
+source "${SCRIPT_DIR}/../common.sh"
+source "${SCRIPT_DIR}/aws-helpers.sh"   # IMDS + SplunkAiRole->IP (AWS-only routing)
 
 require_root
 require_cmd aws

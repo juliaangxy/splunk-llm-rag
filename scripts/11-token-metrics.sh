@@ -140,7 +140,7 @@ fi
 
 # Clean restart helper. Runs as the SPLUNK user (a root-run restart creates root-owned
 # files), with a GENEROUS timeout. The old bounded `timeout 300 splunk_run restart` (root)
-# got killed before the index/HEC finished loading on a heavily-apped search head, which
+# got killed before the index/HEC finished loading on a heavily-apped Splunk host, which
 # left the token unloaded AND the index not loaded into the running indexer (events dropped
 # as "unconfigured index"). A clean, complete restart fixes both.
 splunk_clean_restart() {
@@ -231,7 +231,7 @@ fi
 #    HEC token/index and the routing table. Delegate to start-token-meter-proxies.sh (the
 #    single source of truth for how the proxies are launched — correct upstreams, keys,
 #    HEC_ROUTES_FILE) instead of hand-rolling one backend here.
-START_PROXIES="${SCRIPT_DIR}/start-token-meter-proxies.sh"
+START_PROXIES="${SCRIPT_DIR}/token-meter/start-token-meter-proxies.sh"
 if [[ -f "${START_PROXIES}" ]]; then
   log "Restarting token-metering proxies (vLLM + Ollama) with the aligned token"
   bash "${START_PROXIES}" || warn "Could not restart the metering proxies; run ${START_PROXIES} manually"

@@ -16,7 +16,8 @@ set -euo pipefail
 # by common.sh — the same values the deploy set.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/common.sh"
+source "${SCRIPT_DIR}/../common.sh"
+source "${SCRIPT_DIR}/aws-helpers.sh"   # IMDS + SplunkAiRole->IP (AWS-only routing)
 
 require_root
 

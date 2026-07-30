@@ -179,8 +179,8 @@ if [[ "${DEPLOY_TOKEN_METER_PROXY:-false}" == "true" ]]; then
   # configured target (default: the search head itself, i.e. its own local HEC).
   TOKEN_METER_ROUTES="${TOKEN_METER_ROUTES:-[]}" \
   TOKEN_METER_DEFAULT_ROLE="${TOKEN_METER_DEFAULT_ROLE:-search-head}" \
-    bash "${SCRIPT_DIR}/configure-token-meter-routes.sh" || warn "token-meter route generation failed (non-fatal); using single-HEC default"
-  UPSTREAM_HOST="${GPU_HOST}" bash "${SCRIPT_DIR}/start-token-meter-proxies.sh" || warn "token-meter proxy start failed (non-fatal)"
+    bash "${SCRIPT_DIR}/token-meter/configure-token-meter-routes.sh" || warn "token-meter route generation failed (non-fatal); using single-HEC default"
+  UPSTREAM_HOST="${GPU_HOST}" bash "${SCRIPT_DIR}/token-meter/start-token-meter-proxies.sh" || warn "token-meter proxy start failed (non-fatal)"
   bash "${SCRIPT_DIR}/configure-splunk-llm.sh" --mode proxy || warn "configure-splunk-llm.sh (proxy) failed"
 else
   GPU_HOST="${GPU_HOST}" bash "${SCRIPT_DIR}/configure-splunk-llm.sh" --mode direct || warn "configure-splunk-llm.sh (direct) failed"
