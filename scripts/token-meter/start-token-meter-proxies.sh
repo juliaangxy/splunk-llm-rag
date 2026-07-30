@@ -79,7 +79,16 @@ run_proxy() {
     return 0
   fi
 
-  # Fallback: container image (requires the image to be pullable from a registry/ECR).
+  # Fallback: container image — only meaningful when TOKEN_METER_PROXY_IMAGE is a real registry
+  # ref (contains a registry host, i.e. a "/"). The bare default `token-meter-proxy:latest` has
+  # no registry and would resolve to Docker Hub (which has no such image) — so if the staged
+  # app.py is missing and no real image was configured, fail with a clear, actionable message
+  # instead of a confusing "pull access denied".
+  if [[ "${TOKEN_METER_PROXY_IMAGE}" != */* ]]; then
+    error "Proxy app not found at ${PROXY_APP} (python3: $(command -v python3 || echo missing))."
+    error "Re-copy token-meter-proxy/app.py to ${PROXY_APP}, or set TOKEN_METER_PROXY_IMAGE to a pullable registry ref."
+    return 1
+  fi
   log "Host python/app unavailable; falling back to container image ${TOKEN_METER_PROXY_IMAGE}"
   ensure_image "${TOKEN_METER_PROXY_IMAGE}"
   if docker ps -a --format '{{.Names}}' | grep -qx "${name}"; then

@@ -239,9 +239,19 @@ if [[ "${SEED_ECR}" == "true" ]]; then
   aws ecr get-login-password --region "${REGION}" \
     | docker login --username AWS --password-stdin "${ECR_REGISTRY_URI}" >/dev/null
   # Build for the instances' arch (amd64), not the dev machine's — an arm64 Mac would
-  # otherwise push an arm64 proxy image the EC2 hosts can't run.
-  docker build --platform linux/amd64 --provenance=false -t "${PROXY_IMAGE}" "${PLATFORM_DIR}/token-meter-proxy"
-  docker push "${PROXY_IMAGE}"
+  # otherwise push an arm64 proxy image the EC2 hosts can't run. Push a CLEAN single-arch
+  # image: BuildKit otherwise wraps the push in an OCI image index with an extra 0-byte
+  # provenance/SBOM attestation manifest (the stray "Image Index" + untagged 0.00 MB entry
+  # in ECR, which also trips `docker pull` on some clients). buildx with BOTH attestations
+  # disabled + a single --platform yields one plain manifest; --push uploads it directly.
+  if docker buildx version >/dev/null 2>&1; then
+    docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+      -t "${PROXY_IMAGE}" --push "${PLATFORM_DIR}/token-meter-proxy"
+  else
+    # No buildx: the legacy builder never emits an index/attestation (single amd64 manifest).
+    DOCKER_BUILDKIT=0 docker build --platform linux/amd64 -t "${PROXY_IMAGE}" "${PLATFORM_DIR}/token-meter-proxy"
+    docker push "${PROXY_IMAGE}"
+  fi
 
   if [[ "${ENVIRONMENT}" == "airgapped" ]]; then
     # Airgapped: seed ALL default Splunk DSDL images (so any default image can be

@@ -16,9 +16,25 @@ every call's real token counts land in `index=token_metrics`.
 
 ## Build
 
+**Local (build + run on this machine):**
+
 ```bash
 docker build -t token-meter-proxy:latest token-meter-proxy
 ```
+
+**Push to a registry (e.g. ECR)** — build a CLEAN single-arch image. Disable BuildKit's
+provenance + SBOM attestations, otherwise the push becomes an OCI *image index* with an extra
+0-byte manifest (shows up as a stray "Image Index" + untagged 0.00 MB entry, and trips
+`docker pull` on some clients). Put the full ref in ONE variable — in zsh, `$VAR:tag` triggers
+the `:t` history modifier and mangles the name:
+
+```bash
+IMAGE=<account>.dkr.ecr.<region>.amazonaws.com/<repo>:token-meter-proxy-latest
+docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+  -t "$IMAGE" --push token-meter-proxy
+```
+
+`deploy.sh` does exactly this when `SEED_ECR=true`.
 
 ## Run
 
