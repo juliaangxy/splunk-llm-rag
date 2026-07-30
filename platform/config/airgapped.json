@@ -1,0 +1,146 @@
+[
+  {
+    "ParameterKey": "EnvironmentName",
+    "ParameterValue": "airgapped"
+  },
+  {
+    "ParameterKey": "Airgapped",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "KeyName",
+    "ParameterValue": "splunk-ai-airgapped"
+  },
+  {
+    "ParameterKey": "InstanceTypeGpu",
+    "ParameterValue": "g4dn.4xlarge"
+  },
+  {
+    "ParameterKey": "InstanceTypeSearchHead",
+    "ParameterValue": "t3.medium"
+  },
+  {
+    "ParameterKey": "GpuRootVolumeSize",
+    "ParameterValue": "150"
+  },
+  {
+    "ParameterKey": "SearchHeadRootVolumeSize",
+    "ParameterValue": "80"
+  },
+  {
+    "ParameterKey": "SplunkAdminUser",
+    "ParameterValue": "admin"
+  },
+  {
+    "ParameterKey": "SplunkPackageS3Prefix",
+    "ParameterValue": "splunk-rpms/"
+  },
+  {
+    "ParameterKey": "LicenseS3Prefix",
+    "ParameterValue": "licenses/"
+  },
+  {
+    "ParameterKey": "SplunkAppsS3Prefix",
+    "ParameterValue": "splunk-apps/"
+  },
+  {
+    "ParameterKey": "SkipSplunkAppsBootstrap",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "OllamaModelsJson",
+    "ParameterValue": "[{\"source\":\"foundation-sec-8b\",\"alias\":\"foundation-sec-8b\"},{\"source\":\"granite-3.1-2b\",\"alias\":\"granite-3.1-2b\"}]"
+  },
+  {
+    "ParameterKey": "OllamaModelS3Prefix",
+    "ParameterValue": "models/huggingface/ollama/"
+  },
+  {
+    "ParameterKey": "RagModelName",
+    "ParameterValue": "foundation-sec-8b"
+  },
+  {
+    "ParameterKey": "ContainerImageProfilesJson",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "SplunkMltkGpuImage",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "SplunkLlmRagImage",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "SplunkLlmRagHostPort",
+    "ParameterValue": "5001"
+  },
+  {
+    "ParameterKey": "SplunkMltkGpuHostPort",
+    "ParameterValue": "5003"
+  },
+  {
+    "ParameterKey": "DsdlCpuInferenceImage",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "DsdlCpuInferencePort",
+    "ParameterValue": "5002"
+  },
+  {
+    "ParameterKey": "DsdlDockerNetwork",
+    "ParameterValue": "dsenv-network"
+  },
+  {
+    "ParameterKey": "CreateSnapshotOnSuccess",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "RequireBootstrapSuccess",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "AutoPullDsdlContainers",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "DeployVllm",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "VllmModel",
+    "ParameterValue": "ibm-granite/granite-3.1-2b-instruct"
+  },
+  {
+    "ParameterKey": "VllmModelName",
+    "ParameterValue": "granite-3.1-2b-instruct"
+  },
+  {
+    "ParameterKey": "VllmModelS3Prefix",
+    "ParameterValue": "models/vllm/granite-3.1-2b-instruct/"
+  },
+  {
+    "ParameterKey": "TokenMetricsIndex",
+    "ParameterValue": "token_metrics"
+  },
+  {
+    "ParameterKey": "SearchHeadAppS3Keys",
+    "ParameterValue": "splunk-apps/splunk-ai-toolkit_600.tgz,splunk-apps/splunk-app-for-data-science-and-deep-learning_524.spl,splunk-apps/python-for-scientific-computing-for-linux-64-bit_434.tgz"
+  },
+  {
+    "ParameterKey": "SplunkAppS3Keys",
+    "ParameterValue": "splunk-apps/nvd-cve-fetcher-add-on_106.tar,splunk-apps/python-for-scientific-computing-for-linux-64-bit_434.tgz,splunk-apps/splunk-ai-toolkit_600.tgz,splunk-apps/splunk-app-for-data-science-and-deep-learning_524.spl,splunk-apps/splunk-ai-assistant_220.tgz,splunk-apps/splunk-mcp-server_130.tgz"
+  },
+  {
+    "ParameterKey": "DeployTokenMeterProxy",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "TokenMeterRoutesJson",
+    "ParameterValue": "[]"
+  },
+  {
+    "ParameterKey": "TokenMeterDefaultRole",
+    "ParameterValue": "search-head"
+  }
+]

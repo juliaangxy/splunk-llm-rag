@@ -1,0 +1,65 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  EventBridge Scheduler rule that stops this environment's two instances every
+  Friday 23:00 Asia/Singapore (GMT+8). No automatic restart.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+  GpuInstanceId:
+    Type: String
+  SearchHeadInstanceId:
+    Type: String
+  ScheduleExpression:
+    Type: String
+    Default: cron(0 23 ? * FRI *)
+  ScheduleTimezone:
+    Type: String
+    Default: Asia/Singapore
+
+Resources:
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: StopEnvironmentInstances
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:StopInstances
+                Resource:
+                  - !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/${GpuInstanceId}'
+                  - !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/${SearchHeadInstanceId}'
+
+  StopSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub '${EnvironmentName}-splunk-ai-friday-stop'
+      Description: !Sub 'Stop ${EnvironmentName} Splunk AI instances every Friday 23:00 Asia/Singapore'
+      State: ENABLED
+      FlexibleTimeWindow:
+        Mode: 'OFF'
+      ScheduleExpression: !Ref ScheduleExpression
+      ScheduleExpressionTimezone: !Ref ScheduleTimezone
+      Target:
+        Arn: arn:aws:scheduler:::aws-sdk:ec2:stopInstances
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: !Sub '{"InstanceIds": ["${GpuInstanceId}", "${SearchHeadInstanceId}"]}'
+
+Outputs:
+  ScheduleName:
+    Value: !Ref StopSchedule
+  SchedulerRoleArn:
+    Value: !GetAtt SchedulerRole.Arn

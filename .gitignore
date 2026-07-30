@@ -1,0 +1,49 @@
+# ===== Secrets — never commit real credential/key material =====
+# Deploy secret env files (the *.env.example templates ARE committed)
+*.env
+!*.env.example
+# Host-side secret files written during bootstrap
+bootstrap.secrets.env
+token-meter.env
+token-meter-routes.json
+# SSH / TLS keys and Splunk license files
+*.pem
+*.key
+*.p12
+*.pfx
+*.License
+*.license
+
+# ===== Large / binary deploy inputs (keep local, don't push) =====
+# Splunk app packages, add-ons, RPMs, and staged models
+apps/
+licenses/
+*.spl
+*.tgz
+*.tar
+*.tar.gz
+*.rpm
+*.gguf
+models/
+
+# ===== Build / packaging artifacts =====
+*.zip
+packaged-template.yaml
+cloudformation/parameters/*.env
+
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+
+# ===== Logs =====
+*.log
+
+# ===== Editor / OS / local tooling =====
+.DS_Store
+.vscode/
+.idea/
+.claude/
+
+# ===== Misc local docs =====
+LLM setup.pdf

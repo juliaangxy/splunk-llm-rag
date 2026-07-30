@@ -1,0 +1,113 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Least-privilege IAM role and instance profile shared by the GPU host and the
+  search head. Grants S3 read on both platform buckets, ECR pull, SSM Session
+  Manager, Secrets Manager read on the platform secrets, CloudFormation signal,
+  and EBS snapshot (for the GPU host post-config snapshot).
+
+Parameters:
+  ResourceNamePrefix:
+    Type: String
+    Default: splunk-ai
+  AiArtifactsBucket:
+    Type: String
+  AppsLicenseBucket:
+    Type: String
+
+Resources:
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: PlatformInstancePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadArtifactBuckets
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${AiArtifactsBucket}/*'
+                  - !Sub 'arn:aws:s3:::${AppsLicenseBucket}/*'
+              - Sid: ListArtifactBuckets
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${AiArtifactsBucket}'
+                  - !Sub 'arn:aws:s3:::${AppsLicenseBucket}'
+              - Sid: EcrAuth
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: EcrPull
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: '*'
+              - Sid: ReadPlatformSecrets
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ResourceNamePrefix}/*'
+              - Sid: SignalStack
+                Effect: Allow
+                Action:
+                  - cloudformation:SignalResource
+                Resource: '*'
+              - Sid: SnapshotSelf
+                Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeVolumes
+                  - ec2:CreateSnapshot
+                  - ec2:CreateTags
+                Resource: '*'
+              # Bedrock LLM access for AITK. Declared here so a redeploy of the iam stack
+              # doesn't remove a manually-added grant. InvokeModel is scoped to foundation
+              # models; list/get are account-level and take Resource '*'.
+              - Sid: BedrockInvoke
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub 'arn:aws:bedrock:*::foundation-model/*'
+                  - !Sub 'arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*'
+              - Sid: BedrockList
+                Effect: Allow
+                Action:
+                  - bedrock:ListFoundationModels
+                  - bedrock:GetFoundationModel
+                  - bedrock:ListInferenceProfiles
+                Resource: '*'
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+Outputs:
+  InstanceProfileName:
+    Value: !Ref InstanceProfile
+  RoleName:
+    Value: !Ref InstanceRole
+  RoleArn:
+    Value: !GetAtt InstanceRole.Arn

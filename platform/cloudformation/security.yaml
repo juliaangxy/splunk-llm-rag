@@ -1,0 +1,220 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Per-environment security groups for the GPU host and search head. Inbound SSH (22)
+  and Splunk Web (8000) are restricted to operator-supplied CIDRs; internal service
+  ports are restricted to the VPC CIDR. Egress is the airgap switch: the cloud
+  environment allows all egress, while the airgapped environment allows egress ONLY
+  to the VPC CIDR and the S3 managed prefix list (so it can reach the interface
+  endpoints, S3, and the other instance, but never the public internet).
+
+Parameters:
+  EnvironmentName:
+    Type: String
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  VpcCidr:
+    Type: String
+  AllowedSshCidr:
+    Type: String
+  AllowedSplunkUiCidr:
+    Type: String
+  Airgapped:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+  S3PrefixListId:
+    Type: String
+    Default: ''
+    Description: S3 managed prefix list ID (pl-...). Required when Airgapped=true.
+
+Conditions:
+  IsAirgapped: !Equals [!Ref Airgapped, 'true']
+
+Resources:
+  GpuSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Splunk AI GPU host (${EnvironmentName})'
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # Operator access
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSshCidr
+          Description: SSH (operator)
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: !Ref AllowedSplunkUiCidr
+          Description: Splunk Web UI (operator)
+        - IpProtocol: tcp
+          FromPort: 8089
+          ToPort: 8089
+          CidrIp: 107.23.112.14/32
+          Description: Splunk Agent Mode management access
+        - IpProtocol: tcp
+          FromPort: 8089
+          ToPort: 8089
+          CidrIp: 3.221.64.88/32
+          Description: Splunk Agent Mode management access
+        - IpProtocol: tcp
+          FromPort: 8089
+          ToPort: 8089
+          CidrIp: 44.197.225.234/32
+          Description: Splunk Agent Mode management access
+        - IpProtocol: tcp
+          FromPort: 8089
+          ToPort: 8089
+          CidrIp: 44.216.116.179/32
+          Description: Splunk Agent Mode management access
+        - IpProtocol: tcp
+          FromPort: 8089
+          ToPort: 8089
+          CidrIp: 52.207.14.28/32
+          Description: Splunk Agent Mode management access
+        # Internal services (VPC CIDR only) - reachable by the search head
+        - IpProtocol: tcp
+          FromPort: 2375
+          ToPort: 2375
+          CidrIp: !Ref VpcCidr
+          Description: Docker remote API (DSDL)
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5003
+          CidrIp: !Ref VpcCidr
+          Description: DSDL / MLTK / LLM-RAG / CPU container ports
+        - IpProtocol: tcp
+          FromPort: 8088
+          ToPort: 8089
+          CidrIp: !Ref VpcCidr
+          Description: Splunk HEC (8088) and management (8089)
+        - IpProtocol: tcp
+          FromPort: 8191
+          ToPort: 8191
+          CidrIp: !Ref VpcCidr
+          Description: Splunk KV store
+        - IpProtocol: tcp
+          FromPort: 11434
+          ToPort: 11434
+          CidrIp: !Ref VpcCidr
+          Description: Ollama API
+        - IpProtocol: tcp
+          FromPort: 8001
+          ToPort: 8001
+          CidrIp: !Ref VpcCidr
+          Description: vLLM OpenAI-compatible API
+        - IpProtocol: tcp
+          FromPort: 8100
+          ToPort: 8101
+          CidrIp: !Ref VpcCidr
+          Description: Token-metering proxies (vLLM / Ollama)
+        - IpProtocol: tcp
+          FromPort: 19530
+          ToPort: 19530
+          CidrIp: !Ref VpcCidr
+          Description: Milvus gRPC
+        - IpProtocol: tcp
+          FromPort: 9091
+          ToPort: 9091
+          CidrIp: !Ref VpcCidr
+          Description: Milvus metrics
+        - IpProtocol: tcp
+          FromPort: 9000
+          ToPort: 9001
+          CidrIp: !Ref VpcCidr
+          Description: MinIO API and console
+      SecurityGroupEgress:
+        - !If
+          - IsAirgapped
+          - IpProtocol: -1
+            CidrIp: !Ref VpcCidr
+            Description: VPC-internal (endpoints + other instance)
+          - IpProtocol: -1
+            CidrIp: 0.0.0.0/0
+            Description: All egress (cloud)
+        - !If
+          - IsAirgapped
+          - IpProtocol: -1
+            DestinationPrefixListId: !Ref S3PrefixListId
+            Description: S3 via gateway endpoint
+          - !Ref AWS::NoValue
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-splunk-ai-gpu-sg'
+
+  SearchHeadSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Splunk AI search head (${EnvironmentName})'
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSshCidr
+          Description: SSH (operator)
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: !Ref AllowedSplunkUiCidr
+          Description: Splunk Web UI (operator)
+        - IpProtocol: tcp
+          FromPort: 8089
+          ToPort: 8089
+          CidrIp: 107.23.112.14/32
+          Description: Splunk Agent Mode management access
+        - IpProtocol: tcp
+          FromPort: 8089
+          ToPort: 8089
+          CidrIp: 3.221.64.88/32
+          Description: Splunk Agent Mode management access
+        - IpProtocol: tcp
+          FromPort: 8089
+          ToPort: 8089
+          CidrIp: 44.197.225.234/32
+          Description: Splunk Agent Mode management access
+        - IpProtocol: tcp
+          FromPort: 8089
+          ToPort: 8089
+          CidrIp: 44.216.116.179/32
+          Description: Splunk Agent Mode management access
+        - IpProtocol: tcp
+          FromPort: 8089
+          ToPort: 8089
+          CidrIp: 52.207.14.28/32
+          Description: Splunk Agent Mode management access
+        - IpProtocol: tcp
+          FromPort: 8088
+          ToPort: 8089
+          CidrIp: !Ref VpcCidr
+          Description: Splunk HEC (8088) and management (8089)
+        - IpProtocol: tcp
+          FromPort: 8191
+          ToPort: 8191
+          CidrIp: !Ref VpcCidr
+          Description: Splunk KV store
+      SecurityGroupEgress:
+        - !If
+          - IsAirgapped
+          - IpProtocol: -1
+            CidrIp: !Ref VpcCidr
+            Description: VPC-internal (endpoints + GPU host)
+          - IpProtocol: -1
+            CidrIp: 0.0.0.0/0
+            Description: All egress (cloud)
+        - !If
+          - IsAirgapped
+          - IpProtocol: -1
+            DestinationPrefixListId: !Ref S3PrefixListId
+            Description: S3 via gateway endpoint
+          - !Ref AWS::NoValue
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-splunk-ai-searchhead-sg'
+
+Outputs:
+  GpuSecurityGroupId:
+    Value: !Ref GpuSecurityGroup
+  SearchHeadSecurityGroupId:
+    Value: !Ref SearchHeadSecurityGroup

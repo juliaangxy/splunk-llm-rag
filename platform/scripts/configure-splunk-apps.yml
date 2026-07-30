@@ -1,0 +1,70 @@
+---
+- name: Configure Splunk apps after installation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+  vars:
+    splunk_home: "{{ lookup('env', 'SPLUNK_HOME') | default('/opt/splunk', true) }}"
+    dsdl_docker_host: "{{ lookup('env', 'DSDL_DOCKER_HOST') | default('tcp://127.0.0.1:2375', true) }}"
+    dsdl_endpoint_url: "{{ lookup('env', 'DSDL_ENDPOINT_URL') | default('tcp://127.0.0.1:2375', true) | replace('tcp://', 'https://') }}"
+    dsdl_external_url: "{{ lookup('env', 'DSDL_EXTERNAL_URL') | default('https://127.0.0.1:2375', true) }}"
+    dsdl_docker_network: "{{ lookup('env', 'DSDL_DOCKER_NETWORK') | default('dsenv-network', true) }}"
+    dsdl_allowed_cidr: "{{ lookup('env', 'DOCKER_REMOTE_CIDR') | default('127.0.0.1/32', true) }}"
+    rag_model_name: "{{ lookup('env', 'RAG_MODEL_NAME') | default('llama3.1:8b', true) }}"
+  tasks:
+    - name: Ensure MLTK metadata directory exists
+      ansible.builtin.file:
+        path: "{{ splunk_home }}/etc/apps/Splunk_ML_Toolkit/metadata"
+        state: directory
+        owner: splunk
+        group: splunk
+        mode: "0755"
+
+    - name: Configure MLTK objects to be globally shared
+      ansible.builtin.copy:
+        dest: "{{ splunk_home }}/etc/apps/Splunk_ML_Toolkit/metadata/local.meta"
+        owner: splunk
+        group: splunk
+        mode: "0644"
+        content: |
+          []
+          access = read : [ * ], write : [ admin, sc_admin ]
+          export = system
+
+    - name: Ensure DSDL local config directory exists
+      ansible.builtin.file:
+        path: "{{ splunk_home }}/etc/apps/dsdl/local"
+        state: directory
+        owner: splunk
+        group: splunk
+        mode: "0755"
+
+    - name: Configure DSDL Docker settings
+      ansible.builtin.copy:
+        dest: "{{ splunk_home }}/etc/apps/dsdl/local/docker.conf"
+        owner: splunk
+        group: splunk
+        mode: "0644"
+        content: |
+          [docker]
+          endpoint = {{ dsdl_docker_host }}
+          docker_host = {{ dsdl_docker_host }}
+          endpoint_url = {{ dsdl_endpoint_url }}
+          external_url = {{ dsdl_external_url }}
+          docker_network = {{ dsdl_docker_network }}
+          allowed_cidr = {{ dsdl_allowed_cidr }}
+
+    - name: Configure DSDL LLM-RAG model name
+      ansible.builtin.copy:
+        dest: "{{ splunk_home }}/etc/apps/dsdl/local/llm_rag.conf"
+        owner: splunk
+        group: splunk
+        mode: "0644"
+        content: |
+          [llm_rag]
+          model_name = {{ rag_model_name }}
+
+    - name: Confirm post-install app configuration is complete
+      ansible.builtin.debug:
+        msg: Splunk app post-install configuration has been applied.

@@ -1,0 +1,170 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Shared storage for the Splunk AI platform: two purpose-scoped S3 buckets
+  (AI/ML artifacts, apps+licenses) and a single ECR repository that holds all
+  container images (distinguished by tag). Used by both environments.
+
+Parameters:
+  ResourceNamePrefix:
+    Type: String
+    Default: splunk-ai
+    AllowedPattern: '^[a-z0-9][a-z0-9-]*[a-z0-9]$'
+    ConstraintDescription: must be lowercase alphanumeric or hyphens and start/end alphanumeric
+  ExistingAiArtifactsBucketName:
+    Type: String
+    Default: ''
+    Description: If set, reuse this existing bucket (exact name) instead of creating one.
+  ExistingAppsLicenseBucketName:
+    Type: String
+    Default: ''
+    Description: If set, reuse this existing bucket (exact name) instead of creating one.
+  AiArtifactsBucketBaseName:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[a-z0-9][a-z0-9.-]{1,48}[a-z0-9]$'
+    Description: When CREATING, use this base name + '-<random5>'. Empty -> '<prefix>-ai-artifacts-<random5>'.
+  AppsLicenseBucketBaseName:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[a-z0-9][a-z0-9.-]{1,48}[a-z0-9]$'
+    Description: When CREATING, use this base name + '-<random5>'. Empty -> '<prefix>-apps-license-<random5>'.
+
+Conditions:
+  CreateAiArtifactsBucket: !Equals [!Ref ExistingAiArtifactsBucketName, '']
+  CreateAppsLicenseBucket: !Equals [!Ref ExistingAppsLicenseBucketName, '']
+  HasAiBaseName: !Not [!Equals [!Ref AiArtifactsBucketBaseName, '']]
+  HasAppsBaseName: !Not [!Equals [!Ref AppsLicenseBucketBaseName, '']]
+
+Resources:
+  RandomSuffixRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  RandomSuffixFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt RandomSuffixRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import json
+          import random
+          import re
+          import string
+          import urllib.request
+
+          def _send(event, context, status, data, physical_id):
+              body = json.dumps({
+                  "Status": status,
+                  "Reason": f"See CloudWatch Logs: {context.log_stream_name}",
+                  "PhysicalResourceId": physical_id or context.log_stream_name,
+                  "StackId": event["StackId"],
+                  "RequestId": event["RequestId"],
+                  "LogicalResourceId": event["LogicalResourceId"],
+                  "Data": data,
+              }).encode("utf-8")
+              req = urllib.request.Request(event["ResponseURL"], data=body, method="PUT")
+              req.add_header("content-type", "")
+              req.add_header("content-length", str(len(body)))
+              with urllib.request.urlopen(req) as response:
+                  response.read()
+
+          def handler(event, context):
+              if event["RequestType"] == "Delete":
+                  _send(event, context, "SUCCESS", {"RandomSuffix": event.get("PhysicalResourceId", "")}, event.get("PhysicalResourceId", context.log_stream_name))
+                  return
+
+              raw_prefix = event.get("ResourceProperties", {}).get("ResourceNamePrefix", "")
+              normalized = "".join(ch for ch in str(raw_prefix).lower() if (ch.isalnum() or ch == "-"))
+              normalized = normalized.strip("-")
+
+              if not normalized or not re.match(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$", normalized):
+                  raise ValueError("ResourceNamePrefix normalization produced an invalid value")
+
+              suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=5))
+              physical_id = f"{normalized}-{suffix}"
+              _send(event, context, "SUCCESS", {"RandomSuffix": suffix, "SanitizedPrefix": normalized}, physical_id)
+
+  RandomSuffix:
+    Type: Custom::RandomSuffix
+    Properties:
+      ServiceToken: !GetAtt RandomSuffixFunction.Arn
+      ResourceNamePrefix: !Ref ResourceNamePrefix
+
+  # Bucket A: models and other AI/ML artifacts (Ollama bundles, embedding model, Milvus compose).
+  AiArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateAiArtifactsBucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !If
+        - HasAiBaseName
+        - !Sub '${AiArtifactsBucketBaseName}-${RandomSuffix.RandomSuffix}'
+        - !Sub '${RandomSuffix.SanitizedPrefix}-ai-artifacts-${RandomSuffix.RandomSuffix}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # Bucket B: Splunk apps, licenses, Splunk RPM, plus CloudFormation/bootstrap artifacts.
+  AppsLicenseBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateAppsLicenseBucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !If
+        - HasAppsBaseName
+        - !Sub '${AppsLicenseBucketBaseName}-${RandomSuffix.RandomSuffix}'
+        - !Sub '${RandomSuffix.SanitizedPrefix}-apps-license-${RandomSuffix.RandomSuffix}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ContainerRepository:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RepositoryName: !Sub '${RandomSuffix.SanitizedPrefix}-containers-${RandomSuffix.RandomSuffix}'
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+
+Outputs:
+  AiArtifactsBucketName:
+    Value: !If [CreateAiArtifactsBucket, !Ref AiArtifactsBucket, !Ref ExistingAiArtifactsBucketName]
+  AppsLicenseBucketName:
+    Value: !If [CreateAppsLicenseBucket, !Ref AppsLicenseBucket, !Ref ExistingAppsLicenseBucketName]
+  EcrRegistryUri:
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com'
+  ContainerRepositoryName:
+    Value: !Ref ContainerRepository
+  ContainerRepositoryUri:
+    Value: !GetAtt ContainerRepository.RepositoryUri

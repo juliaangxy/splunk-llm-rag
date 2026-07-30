@@ -1,0 +1,16 @@
+{
+  "_comment": "Single source of truth for the DEFAULT Splunk DSDL container images (mltk-container/default/images.conf, DSDL 5.2.4). Used by seed-default-dsdl-images.sh (pull from Docker Hub -> push to ECR) and generate_default_images_conf.py (write local/images.conf repointed at ECR). Keep 'stanza/title/runtime' identical to the app's default/images.conf. 'source' is the public Docker Hub reference; 'ecr_tag' is the tag used inside the single shared ECR repo (must match the tag push-docker-images-to-ecr.sh derives: <image-name>-<source-tag>).",
+  "version": "5.2.4",
+  "images": [
+    { "stanza": "golden-cpu",              "source": "splunk/mltk-container-golden-cpu:5.2.4",                 "ecr_tag": "mltk-container-golden-cpu-5.2.4",                 "title": "Golden Image CPU (5.2.4)",   "runtime": "none" },
+    { "stanza": "golden-cpu-arm",          "source": "splunk/mltk-container-golden-cpu:5.2.4-arm64",           "ecr_tag": "mltk-container-golden-cpu-5.2.4-arm64",           "title": "Golden Image ARM64 (5.2.4)", "runtime": "none" },
+    { "stanza": "golden-gpu",              "source": "splunk/mltk-container-golden-gpu:5.2.4",                 "ecr_tag": "mltk-container-golden-gpu-5.2.4",                 "title": "Golden Image GPU (5.2.4)",   "runtime": "none,nvidia" },
+    { "stanza": "golden-cpu-transformers", "source": "splunk/mltk-container-golden-cpu-transformers:5.2.4",    "ecr_tag": "mltk-container-golden-cpu-transformers-5.2.4",    "title": "Transformers CPU (5.2.4)",   "runtime": "none" },
+    { "stanza": "golden-gpu-transformers", "source": "splunk/mltk-container-golden-gpu-transformers:5.2.4",    "ecr_tag": "mltk-container-golden-gpu-transformers-5.2.4",    "title": "Transformers GPU (5.2.4)",   "runtime": "none,nvidia" },
+    { "stanza": "golden-gpu-rapids",       "source": "splunk/mltk-container-golden-gpu-rapids:5.2.4",          "ecr_tag": "mltk-container-golden-gpu-rapids-5.2.4",          "title": "Rapids 24.08 (5.2.4)",       "runtime": "none,nvidia" },
+    { "stanza": "llm-rag",                 "source": "splunk/mltk-container-ubi-llm-rag:5.2.4",                "ecr_tag": "mltk-container-ubi-llm-rag-5.2.4",                "title": "Red Hat LLM RAG CPU (5.2.4)","runtime": "none" },
+    { "stanza": "escu-cpu",                "source": "splunk/mltk-container-escu-cpu:5.2.4",                   "ecr_tag": "mltk-container-escu-cpu-5.2.4",                   "title": "ESCU (5.2.4)",               "runtime": "none" },
+    { "stanza": "spark",                   "source": "splunk/mltk-container-spark:5.2.4",                      "ecr_tag": "mltk-container-spark-5.2.4",                      "title": "Spark 3.5.1 (5.2.4)",        "runtime": "none" },
+    { "stanza": "agentic-ai",              "source": "splunk/mltk-container-ubi-llm-rag:agentic-ai-5.2.4",     "ecr_tag": "mltk-container-ubi-llm-rag-agentic-ai-5.2.4",     "title": "Agentic AI (5.2.4)",         "runtime": "none" }
+  ]
+}

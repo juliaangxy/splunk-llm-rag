@@ -1,0 +1,237 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Shared networking for the Splunk AI platform. One VPC + public subnet shared by
+  both the cloud and airgapped environments. The internet gateway is always present
+  (airgapped instances still need inbound 22/8000 and its return path); outbound
+  isolation for the airgapped environment is enforced at the security-group egress
+  level, not by withholding the IGW.
+
+Parameters:
+  ResourceNamePrefix:
+    Type: String
+    Default: splunk-ai
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+  PublicSubnetCidr:
+    Type: String
+    Default: 10.0.1.0/24
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourceNamePrefix}-vpc'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourceNamePrefix}-igw'
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref Vpc
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourceNamePrefix}-public-rt'
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnetCidr
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourceNamePrefix}-public-subnet'
+
+  PublicSubnetRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
+
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: HTTPS access to VPC interface endpoints from within the VPC
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref VpcCidr
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: !Ref VpcCidr
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourceNamePrefix}-endpoint-sg'
+
+  # Gateway endpoint: keeps S3 traffic (artifacts + Amazon Linux 2023 dnf repos)
+  # on the AWS backbone and exposes the S3 managed prefix list for egress rules.
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref PublicRouteTable
+
+  EcrApiInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ecr.api'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  EcrDkrInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ecr.dkr'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  SsmInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ssm'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  SsmMessagesInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ssmmessages'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  Ec2MessagesInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ec2messages'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  SecretsManagerInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.secretsmanager'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  LogsInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.logs'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  StsInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sts'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  # Bedrock data plane (InvokeModel / InvokeModelWithResponseStream). With private DNS,
+  # bedrock-runtime.<region>.amazonaws.com resolves to this endpoint inside the VPC, so
+  # AITK reaches Bedrock privately — works in the airgapped env too (no internet needed).
+  BedrockRuntimeInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.bedrock-runtime'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  # Bedrock control plane (ListFoundationModels / GetFoundationModel) — used when AITK
+  # enumerates models while creating the connection.
+  BedrockInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.bedrock'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+Outputs:
+  VpcId:
+    Value: !Ref Vpc
+  VpcCidr:
+    Value: !Ref VpcCidr
+  PublicSubnetId:
+    Value: !Ref PublicSubnet
+  EndpointSecurityGroupId:
+    Value: !Ref EndpointSecurityGroup

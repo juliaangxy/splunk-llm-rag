@@ -1,0 +1,350 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Per-environment Splunk AI stack (cloud or airgapped). Deploys the security groups,
+  the GPU host, the search head, and the Friday-stop schedule into the shared
+  foundation VPC. Foundation outputs (VPC, subnet, buckets, ECR, instance profile,
+  S3 prefix list) are supplied as parameters by deploy.sh.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+  Airgapped:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+  # Foundation-provided
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PublicSubnetId:
+    Type: AWS::EC2::Subnet::Id
+  VpcCidr:
+    Type: String
+  AiArtifactsBucket:
+    Type: String
+  AppsLicenseBucket:
+    Type: String
+  EcrRegistryUri:
+    Type: String
+  EcrRepositoryName:
+    Type: String
+  InstanceProfileName:
+    Type: String
+  S3PrefixListId:
+    Type: String
+    Default: ''
+  # Operator input
+  AllowedSshCidr:
+    Type: String
+  AllowedSplunkUiCidr:
+    Type: String
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Description: GPU host AMI (NVIDIA Deep Learning AMI, resolved by get-dlami-ami-id.sh).
+  SearchHeadAmiId:
+    Type: AWS::EC2::Image::Id
+    Description: Search-head AMI (Amazon Linux 2023, resolved by get-al2023-ami-id.sh).
+  InstanceTypeGpu:
+    Type: String
+    Default: g4dn.4xlarge
+  InstanceTypeSearchHead:
+    Type: String
+    Default: t3.medium
+  GpuRootVolumeSize:
+    Type: Number
+    Default: 150
+  SearchHeadRootVolumeSize:
+    Type: Number
+    Default: 80
+  # Secrets + bootstrap artifacts
+  SecretsManagerSecretId:
+    Type: String
+  BootstrapScriptsS3Key:
+    Type: String
+  BootstrapScriptsUrl:
+    Type: String
+  SplunkAdminUser:
+    Type: String
+    Default: admin
+  # Splunk package / license / apps
+  SplunkPackageUrl:
+    Type: String
+    Default: ''
+  SplunkPackageS3Key:
+    Type: String
+    Default: ''
+  SplunkPackageS3Prefix:
+    Type: String
+    Default: splunk-rpms/
+  LicenseKey:
+    Type: String
+    Default: ''
+  LicenseS3Prefix:
+    Type: String
+    Default: licenses/
+  SplunkAppS3Keys:
+    Type: String
+    Default: ''
+  SearchHeadAppS3Keys:
+    Type: String
+    Default: ''
+    Description: >
+      Explicit app S3 keys for the SEARCH HEAD (lean AI-command / proxy / token-metrics
+      test client). Excludes Cloud Connect / SAIA / MCP, which belong only on the GPU host.
+  SplunkAppsS3Prefix:
+    Type: String
+    Default: splunk-apps/
+  SkipSplunkAppsBootstrap:
+    Type: String
+    Default: 'false'
+  # Models
+  OllamaModelsJson:
+    Type: String
+    Default: ''
+  OllamaModelS3Prefix:
+    Type: String
+    Default: models/huggingface/ollama/
+  RagModelName:
+    Type: String
+    Default: llama3.1:8b
+  # Container profiles / DSDL
+  ContainerImageProfilesJson:
+    Type: String
+    Default: ''
+  SplunkMltkGpuImage:
+    Type: String
+    Default: ''
+  SplunkLlmRagImage:
+    Type: String
+    Default: ''
+  SplunkLlmRagHostPort:
+    Type: Number
+    Default: 5001
+  SplunkMltkGpuHostPort:
+    Type: Number
+    Default: 5003
+  DsdlCpuInferenceImage:
+    Type: String
+    Default: ''
+  DsdlCpuInferencePort:
+    Type: Number
+    Default: 5002
+  DsdlDockerNetwork:
+    Type: String
+    Default: dsenv-network
+  # Airgap infra image overrides
+  OllamaImage:
+    Type: String
+    Default: ollama/ollama:latest
+  EtcdImage:
+    Type: String
+    Default: quay.io/coreos/etcd:v3.5.12
+  MinioImage:
+    Type: String
+    Default: minio/minio:RELEASE.2024-06-11T03-13-30Z
+  MilvusImage:
+    Type: String
+    Default: milvusdb/milvus:v2.4.8
+  NvidiaTestImage:
+    Type: String
+    Default: nvidia/cuda:12.4.1-base-ubuntu22.04
+  CreateSnapshotOnSuccess:
+    Type: String
+    Default: 'true'
+  RequireBootstrapSuccess:
+    Type: String
+    Default: 'true'
+  AutoPullDsdlContainers:
+    Type: String
+    Default: 'false'
+  DeployVllm:
+    Type: String
+    Default: 'true'
+  DeployTokenMeterProxy:
+    Type: String
+    Default: 'false'
+  VllmImage:
+    Type: String
+    Default: vllm/vllm-openai:latest
+  VllmModel:
+    Type: String
+    Default: ibm-granite/granite-3.1-2b-instruct
+  VllmModelName:
+    Type: String
+    Default: granite-3.1-2b-instruct
+  VllmModelS3Prefix:
+    Type: String
+    Default: models/vllm/granite-3.1-2b-instruct/
+  TokenMeterProxyImage:
+    Type: String
+    Default: token-meter-proxy:latest
+  TokenMetricsIndex:
+    Type: String
+    Default: token_metrics
+  TokenMeterRoutesJson:
+    Type: String
+    Default: '[]'
+    Description: >-
+      JSON array of token-meter routing rules (see configure-token-meter-routes.sh).
+      Each rule: {match_field, match_value, match_mode?, target_role, hec_host?, hec_token?}.
+      Empty array routes everything to TokenMeterDefaultRole.
+  TokenMeterDefaultRole:
+    Type: String
+    Default: search-head
+    AllowedValues: [search-head, gpu-host, self]
+    Description: >-
+      Where unmatched token-usage metrics are shipped. Default 'search-head' makes all
+      model usage (from both instances) visible in the search head's token_metrics index.
+
+Resources:
+  SecurityStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: security.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        VpcId: !Ref VpcId
+        VpcCidr: !Ref VpcCidr
+        AllowedSshCidr: !Ref AllowedSshCidr
+        AllowedSplunkUiCidr: !Ref AllowedSplunkUiCidr
+        Airgapped: !Ref Airgapped
+        S3PrefixListId: !Ref S3PrefixListId
+
+  GpuInstanceStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: gpu-instance.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        AmiId: !Ref AmiId
+        InstanceType: !Ref InstanceTypeGpu
+        KeyName: !Ref KeyName
+        SubnetId: !Ref PublicSubnetId
+        SecurityGroupId: !GetAtt SecurityStack.Outputs.GpuSecurityGroupId
+        InstanceProfileName: !Ref InstanceProfileName
+        RootVolumeSize: !Ref GpuRootVolumeSize
+        Airgapped: !Ref Airgapped
+        AppsLicenseBucket: !Ref AppsLicenseBucket
+        AiArtifactsBucket: !Ref AiArtifactsBucket
+        EcrRegistryUri: !Ref EcrRegistryUri
+        EcrRepositoryName: !Ref EcrRepositoryName
+        BootstrapScriptsS3Key: !Ref BootstrapScriptsS3Key
+        BootstrapScriptsUrl: !Ref BootstrapScriptsUrl
+        SecretsManagerSecretId: !Ref SecretsManagerSecretId
+        SplunkAdminUser: !Ref SplunkAdminUser
+        SplunkPackageUrl: !Ref SplunkPackageUrl
+        SplunkPackageS3Key: !Ref SplunkPackageS3Key
+        SplunkPackageS3Prefix: !Ref SplunkPackageS3Prefix
+        LicenseKey: !Ref LicenseKey
+        LicenseS3Prefix: !Ref LicenseS3Prefix
+        SplunkAppS3Keys: !Ref SplunkAppS3Keys
+        SplunkAppsS3Prefix: !Ref SplunkAppsS3Prefix
+        SkipSplunkAppsBootstrap: !Ref SkipSplunkAppsBootstrap
+        OllamaModelsJson: !Ref OllamaModelsJson
+        OllamaModelS3Prefix: !Ref OllamaModelS3Prefix
+        RagModelName: !Ref RagModelName
+        ContainerImageProfilesJson: !Ref ContainerImageProfilesJson
+        SplunkMltkGpuImage: !Ref SplunkMltkGpuImage
+        SplunkLlmRagImage: !Ref SplunkLlmRagImage
+        SplunkLlmRagHostPort: !Ref SplunkLlmRagHostPort
+        SplunkMltkGpuHostPort: !Ref SplunkMltkGpuHostPort
+        DsdlCpuInferenceImage: !Ref DsdlCpuInferenceImage
+        DsdlCpuInferencePort: !Ref DsdlCpuInferencePort
+        DsdlDockerNetwork: !Ref DsdlDockerNetwork
+        OllamaImage: !Ref OllamaImage
+        EtcdImage: !Ref EtcdImage
+        MinioImage: !Ref MinioImage
+        MilvusImage: !Ref MilvusImage
+        NvidiaTestImage: !Ref NvidiaTestImage
+        CreateSnapshotOnSuccess: !Ref CreateSnapshotOnSuccess
+        RequireBootstrapSuccess: !Ref RequireBootstrapSuccess
+        AutoPullDsdlContainers: !Ref AutoPullDsdlContainers
+        DeployVllm: !Ref DeployVllm
+        DeployTokenMeterProxy: !Ref DeployTokenMeterProxy
+        VllmImage: !Ref VllmImage
+        VllmModel: !Ref VllmModel
+        VllmModelName: !Ref VllmModelName
+        VllmModelS3Prefix: !Ref VllmModelS3Prefix
+        TokenMeterProxyImage: !Ref TokenMeterProxyImage
+        TokenMetricsIndex: !Ref TokenMetricsIndex
+        TokenMeterRoutesJson: !Ref TokenMeterRoutesJson
+        TokenMeterDefaultRole: !Ref TokenMeterDefaultRole
+
+  SearchHeadStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: GpuInstanceStack
+    Properties:
+      TemplateURL: search-head-instance.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        AmiId: !Ref SearchHeadAmiId
+        InstanceType: !Ref InstanceTypeSearchHead
+        KeyName: !Ref KeyName
+        SubnetId: !Ref PublicSubnetId
+        SecurityGroupId: !GetAtt SecurityStack.Outputs.SearchHeadSecurityGroupId
+        InstanceProfileName: !Ref InstanceProfileName
+        RootVolumeSize: !Ref SearchHeadRootVolumeSize
+        Airgapped: !Ref Airgapped
+        AppsLicenseBucket: !Ref AppsLicenseBucket
+        EcrRegistryUri: !Ref EcrRegistryUri
+        EcrRepositoryName: !Ref EcrRepositoryName
+        BootstrapScriptsS3Key: !Ref BootstrapScriptsS3Key
+        BootstrapScriptsUrl: !Ref BootstrapScriptsUrl
+        SecretsManagerSecretId: !Ref SecretsManagerSecretId
+        SplunkAdminUser: !Ref SplunkAdminUser
+        SplunkPackageUrl: !Ref SplunkPackageUrl
+        SplunkPackageS3Key: !Ref SplunkPackageS3Key
+        SplunkPackageS3Prefix: !Ref SplunkPackageS3Prefix
+        LicenseKey: !Ref LicenseKey
+        LicenseS3Prefix: !Ref LicenseS3Prefix
+        SplunkAppS3Keys: !Ref SearchHeadAppS3Keys
+        SplunkAppsS3Prefix: !Ref SplunkAppsS3Prefix
+        SkipSplunkAppsBootstrap: !Ref SkipSplunkAppsBootstrap
+        GpuHostPrivateIp: !GetAtt GpuInstanceStack.Outputs.PrivateIp
+        VpcCidr: !Ref VpcCidr
+        ContainerImageProfilesJson: !Ref ContainerImageProfilesJson
+        SplunkLlmRagImage: !Ref SplunkLlmRagImage
+        SplunkLlmRagHostPort: !Ref SplunkLlmRagHostPort
+        DsdlDockerNetwork: !Ref DsdlDockerNetwork
+        RagModelName: !Ref RagModelName
+        VllmModelName: !Ref VllmModelName
+        DeployTokenMeterProxy: !Ref DeployTokenMeterProxy
+        RequireBootstrapSuccess: !Ref RequireBootstrapSuccess
+        TokenMeterRoutesJson: !Ref TokenMeterRoutesJson
+        TokenMeterDefaultRole: !Ref TokenMeterDefaultRole
+
+  SchedulerStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: scheduler.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        GpuInstanceId: !GetAtt GpuInstanceStack.Outputs.InstanceId
+        SearchHeadInstanceId: !GetAtt SearchHeadStack.Outputs.InstanceId
+
+Outputs:
+  GpuInstanceId:
+    Value: !GetAtt GpuInstanceStack.Outputs.InstanceId
+  GpuPrivateIp:
+    Value: !GetAtt GpuInstanceStack.Outputs.PrivateIp
+  GpuElasticIp:
+    Value: !GetAtt GpuInstanceStack.Outputs.ElasticIp
+  GpuSplunkUrl:
+    Value: !Sub
+      - 'https://${Ip}:8000'
+      - Ip: !GetAtt GpuInstanceStack.Outputs.ElasticIp
+  GpuOllamaUrl:
+    Value: !Sub
+      - 'http://${Ip}:11434'
+      - Ip: !GetAtt GpuInstanceStack.Outputs.ElasticIp
+  SearchHeadInstanceId:
+    Value: !GetAtt SearchHeadStack.Outputs.InstanceId
+  SearchHeadElasticIp:
+    Value: !GetAtt SearchHeadStack.Outputs.ElasticIp
+  SearchHeadSplunkUrl:
+    Value: !Sub
+      - 'https://${Ip}:8000'
+      - Ip: !GetAtt SearchHeadStack.Outputs.ElasticIp
+  StopScheduleName:
+    Value: !GetAtt SchedulerStack.Outputs.ScheduleName

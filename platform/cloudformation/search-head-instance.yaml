@@ -1,0 +1,225 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Search head (t3.medium): Splunk Enterprise with apps + license, configured to
+  drive the AI containers on the GPU host over the VPC (DSDL remote Docker, Ollama,
+  Milvus). No local Docker/GPU stack.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+  AmiId:
+    Type: AWS::EC2::Image::Id
+  InstanceType:
+    Type: String
+    Default: t3.medium
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+  SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  InstanceProfileName:
+    Type: String
+  RootVolumeSize:
+    Type: Number
+    Default: 80
+  Airgapped:
+    Type: String
+    Default: 'false'
+  AppsLicenseBucket:
+    Type: String
+  EcrRegistryUri:
+    Type: String
+  EcrRepositoryName:
+    Type: String
+  BootstrapScriptsS3Key:
+    Type: String
+  BootstrapScriptsUrl:
+    Type: String
+  SecretsManagerSecretId:
+    Type: String
+  SplunkAdminUser:
+    Type: String
+    Default: admin
+  SplunkPackageUrl:
+    Type: String
+    Default: ''
+  SplunkPackageS3Key:
+    Type: String
+    Default: ''
+  SplunkPackageS3Prefix:
+    Type: String
+    Default: splunk-rpms/
+  LicenseKey:
+    Type: String
+    Default: ''
+  LicenseS3Prefix:
+    Type: String
+    Default: licenses/
+  SplunkAppS3Keys:
+    Type: String
+    Default: ''
+  SplunkAppsS3Prefix:
+    Type: String
+    Default: splunk-apps/
+  SkipSplunkAppsBootstrap:
+    Type: String
+    Default: 'false'
+  GpuHostPrivateIp:
+    Type: String
+  VpcCidr:
+    Type: String
+  ContainerImageProfilesJson:
+    Type: String
+    Default: ''
+  SplunkLlmRagImage:
+    Type: String
+    Default: ''
+  SplunkLlmRagHostPort:
+    Type: Number
+    Default: 5001
+  DsdlDockerNetwork:
+    Type: String
+    Default: dsenv-network
+  RagModelName:
+    Type: String
+    Default: llama3.1:8b
+  VllmModelName:
+    Type: String
+    Default: granite-3.1-2b-instruct
+  DeployTokenMeterProxy:
+    Type: String
+    Default: 'false'
+    Description: When true, the search head starts a local metering proxy (to the GPU host) and routes AITK through it.
+  RequireBootstrapSuccess:
+    Type: String
+    Default: 'true'
+  TokenMeterRoutesJson:
+    Type: String
+    Default: '[]'
+  TokenMeterDefaultRole:
+    Type: String
+    Default: search-head
+
+Resources:
+  SearchHeadInstance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT45M
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfileName
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref SecurityGroupId
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: !Ref RootVolumeSize
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-splunk-ai-searchhead'
+        - Key: SplunkAiRole
+          Value: search-head
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          exec > >(tee -a /var/log/splunk-ai-userdata.log) 2>&1
+
+          CFN_STACK_NAME='${AWS::StackName}'
+          CFN_REGION='${AWS::Region}'
+
+          mkdir -p /opt/splunk-ai
+          cat >/opt/splunk-ai/bootstrap.env <<'ENVVARS'
+          export AIRGAPPED='${Airgapped}'
+          export CFN_STACK_NAME='${AWS::StackName}'
+          export CFN_REGION='${AWS::Region}'
+          export AWS_REGION='${AWS::Region}'
+          export SECRETS_MANAGER_SECRET_ID='${SecretsManagerSecretId}'
+          export SPLUNK_ADMIN_USER='${SplunkAdminUser}'
+          export LICENSE_BUCKET='${AppsLicenseBucket}'
+          export CFN_ARTIFACT_BUCKET='${AppsLicenseBucket}'
+          export ECR_REGISTRY_URI='${EcrRegistryUri}'
+          export ECR_REPOSITORY_NAME='${EcrRepositoryName}'
+          export SPLUNK_PACKAGE_URL='${SplunkPackageUrl}'
+          export SPLUNK_PACKAGE_S3_KEY='${SplunkPackageS3Key}'
+          export SPLUNK_PACKAGE_S3_PREFIX='${SplunkPackageS3Prefix}'
+          export LICENSE_KEY='${LicenseKey}'
+          export LICENSES_S3_PREFIX='${LicenseS3Prefix}'
+          export SPLUNK_APP_S3_KEYS='${SplunkAppS3Keys}'
+          export SPLUNK_APPS_S3_PREFIX='${SplunkAppsS3Prefix}'
+          export SKIP_SPLUNK_APPS_BOOTSTRAP='${SkipSplunkAppsBootstrap}'
+          export GPU_HOST='${GpuHostPrivateIp}'
+          export VPC_CIDR='${VpcCidr}'
+          export ENVIRONMENT_NAME='${EnvironmentName}'
+          export TOKEN_METER_ROUTES='${TokenMeterRoutesJson}'
+          export TOKEN_METER_DEFAULT_ROLE='${TokenMeterDefaultRole}'
+          export CONTAINER_IMAGE_PROFILES_JSON='${ContainerImageProfilesJson}'
+          export SPLUNK_LLM_RAG_IMAGE='${SplunkLlmRagImage}'
+          export SPLUNK_LLM_RAG_HOST_PORT='${SplunkLlmRagHostPort}'
+          export DSDL_DOCKER_NETWORK='${DsdlDockerNetwork}'
+          export RAG_MODEL_NAME='${RagModelName}'
+          export VLLM_MODEL_NAME='${VllmModelName}'
+          export DEPLOY_TOKEN_METER_PROXY='${DeployTokenMeterProxy}'
+          export REQUIRE_BOOTSTRAP_SUCCESS='${RequireBootstrapSuccess}'
+          ENVVARS
+          chmod 600 /opt/splunk-ai/bootstrap.env
+
+          if ! aws s3 cp "s3://${AppsLicenseBucket}/${BootstrapScriptsS3Key}" /tmp/splunk-ai-scripts.tar.gz --region "${AWS::Region}"; then
+            echo "WARNING: S3 download of bootstrap scripts failed; falling back to presigned URL"
+            curl -fL '${BootstrapScriptsUrl}' -o /tmp/splunk-ai-scripts.tar.gz
+          fi
+          tar --warning=no-unknown-keyword -xzf /tmp/splunk-ai-scripts.tar.gz -C /opt/splunk-ai
+          test -f /opt/splunk-ai/scripts/bootstrap-searchhead.sh
+          test -f /opt/splunk-ai/scripts/configure-splunk-apps.yml
+          chmod +x /opt/splunk-ai/scripts/*.sh
+
+          INSTANCE_ID="$(curl -s http://169.254.169.254/latest/meta-data/instance-id || true)"
+          [[ -n "$INSTANCE_ID" ]] || INSTANCE_ID="bootstrap"
+
+          source /opt/splunk-ai/bootstrap.env
+          if /opt/splunk-ai/scripts/bootstrap-searchhead.sh; then
+            aws cloudformation signal-resource --stack-name "$CFN_STACK_NAME" \
+              --logical-resource-id SearchHeadInstance --unique-id "$INSTANCE_ID" \
+              --status SUCCESS --region "$CFN_REGION"
+            exit 0
+          else
+            BOOTSTRAP_EXIT=$?
+            if [[ "$REQUIRE_BOOTSTRAP_SUCCESS" == "false" ]]; then
+              echo "bootstrap-searchhead.sh exited $BOOTSTRAP_EXIT but signaling SUCCESS (REQUIRE_BOOTSTRAP_SUCCESS=false)"
+              aws cloudformation signal-resource --stack-name "$CFN_STACK_NAME" \
+                --logical-resource-id SearchHeadInstance --unique-id "$INSTANCE_ID" \
+                --status SUCCESS --region "$CFN_REGION"
+              exit 0
+            fi
+            aws cloudformation signal-resource --stack-name "$CFN_STACK_NAME" \
+              --logical-resource-id SearchHeadInstance --unique-id "$INSTANCE_ID" \
+              --status FAILURE --region "$CFN_REGION"
+            exit "$BOOTSTRAP_EXIT"
+          fi
+
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  ElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt ElasticIp.AllocationId
+      InstanceId: !Ref SearchHeadInstance
+
+Outputs:
+  InstanceId:
+    Value: !Ref SearchHeadInstance
+  PrivateIp:
+    Value: !GetAtt SearchHeadInstance.PrivateIp
+  ElasticIp:
+    Value: !Ref ElasticIp
