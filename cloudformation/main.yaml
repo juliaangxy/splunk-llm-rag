@@ -1,0 +1,281 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Root template orchestrating Splunk AI platform nested stacks.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+  PublicSubnetCidr:
+    Type: String
+    Default: 10.0.1.0/24
+  AllowedSshCidr:
+    Type: String
+  AllowedSplunkUiCidr:
+    Type: String
+    Default: ''
+  AllowedDockerCidr:
+    Type: String
+    Default: ''
+  AllowedDsdlCidr:
+    Type: String
+    Default: ''
+  AllowedOllamaCidr:
+    Type: String
+    Default: ''
+  AllowedOllamaInternalCidr:
+    Type: String
+    Default: ''
+  AllowedMilvusCidr:
+    Type: String
+    Default: ''
+  InstanceType:
+    Type: String
+    Default: g6.4xlarge
+    AllowedValues:
+      - g6.4xlarge
+      - g5.4xlarge
+      - g4dn.4xlarge
+  RootVolumeSize:
+    Type: Number
+    Default: 80
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+  LicenseBucket:
+    Type: String
+  LicenseKey:
+    Type: String
+    Default: ''
+  LicenseS3Prefix:
+    Type: String
+    Default: licenses/
+  SplunkPackageUrl:
+    Type: String
+    Default: ''
+  SplunkPackageS3Key:
+    Type: String
+    Default: ''
+  SplunkPackageS3Prefix:
+    Type: String
+    Default: splunk-rpms/
+  ContainerImageProfilesJson:
+    Type: String
+    Default: ''
+  CfnArtifactBucket:
+    Type: String
+  AmiId:
+    Type: AWS::EC2::Image::Id
+  BootstrapScriptsUrl:
+    Type: String
+  BootstrapScriptsS3Key:
+    Type: String
+  SplunkAdminUser:
+    Type: String
+    Default: admin
+  SplunkAdminPassword:
+    Type: String
+    NoEcho: true
+  SplunkMltkGpuImage:
+    Type: String
+    Default: ''
+  SplunkLlmRagImage:
+    Type: String
+    Default: ''
+  SplunkLlmRagHostPort:
+    Type: Number
+    Default: 5001
+  SplunkMltkGpuHostPort:
+    Type: Number
+    Default: 5003
+  MltkContainerExternalHost:
+    Type: String
+    Default: ''
+  DsdlDockerHost:
+    Type: String
+    Default: tcp://127.0.0.1:2375
+  DsdlEndpointUrl:
+    Type: String
+    Default: https://127.0.0.1:2375
+  DsdlExternalUrl:
+    Type: String
+    Default: https://127.0.0.1:2375
+  DsdlDockerNetwork:
+    Type: String
+    Default: dsenv-network
+  DsdlCpuInferenceImage:
+    Type: String
+    Default: ''
+  DsdlCpuInferencePort:
+    Type: Number
+    Default: 5002
+  AiArtifactsBucket:
+    Type: String
+    Default: ''
+  OllamaModelS3Prefix:
+    Type: String
+    Default: models/huggingface/ollama/
+  OllamaModelsJson:
+    Type: String
+    Default: ''
+  SplunkAppS3Keys:
+    Type: String
+    Default: ''
+  SplunkAppsS3Prefix:
+    Type: String
+    Default: splunk-apps/
+  RagModelName:
+    Type: String
+    Default: ''
+  CreateSnapshotOnSuccess:
+    Type: String
+    Default: 'true'
+  RequireBootstrapSuccess:
+    Type: String
+    Default: 'true'
+  SkipSplunkAppsBootstrap:
+    Type: String
+    Default: 'false'
+
+Conditions:
+  HasAllowedSplunkUiCidr: !Not [!Equals [!Ref AllowedSplunkUiCidr, '']]
+  HasAllowedDockerCidr: !Not [!Equals [!Ref AllowedDockerCidr, '']]
+  HasAllowedDsdlCidr: !Not [!Equals [!Ref AllowedDsdlCidr, '']]
+  HasAllowedOllamaCidr: !Not [!Equals [!Ref AllowedOllamaCidr, '']]
+  HasAllowedOllamaInternalCidr: !Not [!Equals [!Ref AllowedOllamaInternalCidr, '']]
+  HasAllowedMilvusCidr: !Not [!Equals [!Ref AllowedMilvusCidr, '']]
+
+Resources:
+  NetworkStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: network.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        VpcCidr: !Ref VpcCidr
+        PublicSubnetCidr: !Ref PublicSubnetCidr
+
+  SecurityStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: security.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        VpcId: !GetAtt NetworkStack.Outputs.VpcId
+        AllowedSshCidr: !Ref AllowedSshCidr
+        AllowedSplunkUiCidr: !Ref AllowedSplunkUiCidr
+        AllowedDockerCidr: !If [HasAllowedDockerCidr, !Ref AllowedDockerCidr, !Ref VpcCidr]
+        AllowedDsdlCidr: !If [HasAllowedDsdlCidr, !Ref AllowedDsdlCidr, !Ref VpcCidr]
+        AllowedOllamaCidr: !If [HasAllowedOllamaCidr, !Ref AllowedOllamaCidr, !Ref VpcCidr]
+        AllowedOllamaInternalCidr: !If [HasAllowedOllamaInternalCidr, !Ref AllowedOllamaInternalCidr, !Ref VpcCidr]
+        AllowedMilvusCidr: !If [HasAllowedMilvusCidr, !Ref AllowedMilvusCidr, !Ref VpcCidr]
+
+  IamStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: iam.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        LicenseBucket: !Ref LicenseBucket
+        SplunkPackageS3Key: !Ref SplunkPackageS3Key
+        SplunkPackageS3Prefix: !Ref SplunkPackageS3Prefix
+        CfnArtifactBucket: !Ref CfnArtifactBucket
+        AiArtifactsBucket: !Ref AiArtifactsBucket
+        OllamaModelS3Prefix: !Ref OllamaModelS3Prefix
+        SplunkAppsS3Prefix: !Ref SplunkAppsS3Prefix
+
+  GpuInstanceStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: gpu-instance.yaml
+      Parameters:
+        EnvironmentName: !Ref EnvironmentName
+        AmiId: !Ref AmiId
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyName
+        SubnetId: !GetAtt NetworkStack.Outputs.PublicSubnetId
+        SecurityGroupId: !GetAtt SecurityStack.Outputs.SecurityGroupId
+        InstanceProfileName: !GetAtt IamStack.Outputs.InstanceProfileName
+        RootVolumeSize: !Ref RootVolumeSize
+        LicenseBucket: !Ref LicenseBucket
+        LicenseKey: !Ref LicenseKey
+        LicenseS3Prefix: !Ref LicenseS3Prefix
+        SplunkPackageUrl: !Ref SplunkPackageUrl
+        SplunkPackageS3Key: !Ref SplunkPackageS3Key
+        SplunkPackageS3Prefix: !Ref SplunkPackageS3Prefix
+        ContainerImageProfilesJson: !Ref ContainerImageProfilesJson
+        CfnArtifactBucket: !Ref CfnArtifactBucket
+        BootstrapScriptsS3Key: !Ref BootstrapScriptsS3Key
+        BootstrapScriptsUrl: !Ref BootstrapScriptsUrl
+        SplunkAdminUser: !Ref SplunkAdminUser
+        SplunkAdminPassword: !Ref SplunkAdminPassword
+        SplunkMltkGpuImage: !Ref SplunkMltkGpuImage
+        SplunkLlmRagImage: !Ref SplunkLlmRagImage
+        SplunkLlmRagHostPort: !Ref SplunkLlmRagHostPort
+        SplunkMltkGpuHostPort: !Ref SplunkMltkGpuHostPort
+        MltkContainerExternalHost: !Ref MltkContainerExternalHost
+        DsdlDockerHost: !Ref DsdlDockerHost
+        DsdlEndpointUrl: !Ref DsdlEndpointUrl
+        DsdlExternalUrl: !Ref DsdlExternalUrl
+        DsdlDockerNetwork: !Ref DsdlDockerNetwork
+        DsdlCpuInferenceImage: !Ref DsdlCpuInferenceImage
+        DsdlCpuInferencePort: !Ref DsdlCpuInferencePort
+        AiArtifactsBucket: !Ref AiArtifactsBucket
+        OllamaModelS3Prefix: !Ref OllamaModelS3Prefix
+        OllamaModelsJson: !Ref OllamaModelsJson
+        SplunkAppS3Keys: !Ref SplunkAppS3Keys
+        SplunkAppsS3Prefix: !Ref SplunkAppsS3Prefix
+        RagModelName: !Ref RagModelName
+        CreateSnapshotOnSuccess: !Ref CreateSnapshotOnSuccess
+        RequireBootstrapSuccess: !Ref RequireBootstrapSuccess
+        SkipSplunkAppsBootstrap: !Ref SkipSplunkAppsBootstrap
+
+Outputs:
+  ElasticIp:
+    Description: Public Elastic IP address
+    Value: !GetAtt GpuInstanceStack.Outputs.ElasticIp
+
+  InstanceId:
+    Description: EC2 instance ID
+    Value: !GetAtt GpuInstanceStack.Outputs.InstanceId
+
+  SplunkUrl:
+    Description: Splunk Web URL
+    Value: !Join ['', ['https://', !GetAtt GpuInstanceStack.Outputs.ElasticIp, ':8000']]
+
+  OllamaUrl:
+    Description: Ollama endpoint URL
+    Value: !Join ['', ['http://', !GetAtt GpuInstanceStack.Outputs.ElasticIp, ':11434']]
+
+  MilvusEndpoint:
+    Description: Milvus endpoint
+    Value: !Join ['', [!GetAtt GpuInstanceStack.Outputs.ElasticIp, ':19530']]
+
+  SshCommand:
+    Description: SSH command template
+    Value: !Join ['', ['ssh ec2-user@', !GetAtt GpuInstanceStack.Outputs.ElasticIp]]
+
+  DeploymentSummary:
+    Description: Placeholder summary output.
+    Value: Splunk AI platform stack initialized.
+
+  LicenseBucketName:
+    Description: S3 bucket used for licenses and app tarballs
+    Value: !Ref LicenseBucket
+
+  AiArtifactsBucketName:
+    Description: S3 bucket used for AI runtime artifacts (Ollama and Milvus)
+    Value: !Ref AiArtifactsBucket
+
+  EcrRegistryUri:
+    Description: ECR registry URI for optional container images
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com'
+
+  MltkGpuRepositoryUri:
+    Description: Optional MLTK GPU ECR repository URI
+    Value: ''
+
+  LlmRagRepositoryUri:
+    Description: Optional LLM RAG ECR repository URI
+    Value: ''

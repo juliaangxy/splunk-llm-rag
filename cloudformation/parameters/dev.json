@@ -1,0 +1,134 @@
+[
+  {
+    "ParameterKey": "EnvironmentName",
+    "ParameterValue": "dev"
+  },
+  {
+    "ParameterKey": "InstanceType",
+    "ParameterValue": "g4dn.4xlarge"
+  },
+  {
+    "ParameterKey": "RootVolumeSize",
+    "ParameterValue": "150"
+  },
+  {
+    "ParameterKey": "KeyName",
+    "ParameterValue": "splunk-ai-dev"
+  },
+  {
+    "ParameterKey": "VpcCidr",
+    "ParameterValue": "10.0.0.0/16"
+  },
+  {
+    "ParameterKey": "PublicSubnetCidr",
+    "ParameterValue": "10.0.1.0/24"
+  },
+  {
+    "ParameterKey": "AllowedDockerCidr",
+    "ParameterValue": "10.0.0.0/16"
+  },
+  {
+    "ParameterKey": "AllowedDsdlCidr",
+    "ParameterValue": "10.0.0.0/16"
+  },
+  {
+    "ParameterKey": "AllowedOllamaCidr",
+    "ParameterValue": "10.0.0.0/16"
+  },
+  {
+    "ParameterKey": "AllowedOllamaInternalCidr",
+    "ParameterValue": "10.0.0.0/16"
+  },
+  {
+    "ParameterKey": "AllowedMilvusCidr",
+    "ParameterValue": "10.0.0.0/16"
+  },
+  {
+    "ParameterKey": "LicenseBucket",
+    "ParameterValue": "ai-splunk-license-bucket"
+  },
+  {
+    "ParameterKey": "LicenseKey",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "LicenseS3Prefix",
+    "ParameterValue": "licenses/"
+  },
+  {
+    "ParameterKey": "SplunkPackageS3Prefix",
+    "ParameterValue": "splunk-rpms/"
+  },
+  {
+    "ParameterKey": "SplunkAppsS3Prefix",
+    "ParameterValue": "splunk-apps/"
+  },
+  {
+    "ParameterKey": "SplunkMltkGpuImage",
+    "ParameterValue": "splunk/mltk-container-golden-gpu:5.2.3"
+  },
+  {
+    "ParameterKey": "SplunkLlmRagImage",
+    "ParameterValue": "splunk/mltk-container-ubi-llm-rag:5.2.3"
+  },
+  {
+    "ParameterKey": "DsdlDockerHost",
+    "ParameterValue": "tcp://127.0.0.1:2375"
+  },
+  {
+    "ParameterKey": "DsdlEndpointUrl",
+    "ParameterValue": "https://127.0.0.1:2375"
+  },
+  {
+    "ParameterKey": "DsdlExternalUrl",
+    "ParameterValue": "https://127.0.0.1:2375"
+  },
+  {
+    "ParameterKey": "DsdlDockerNetwork",
+    "ParameterValue": "dsenv-network"
+  },
+  {
+    "ParameterKey": "AiArtifactsBucket",
+    "ParameterValue": "ai-splunk-ai-bucket"
+  },
+  {
+    "ParameterKey": "OllamaModelS3Prefix",
+    "ParameterValue": "models/huggingface/ollama/"
+  },
+  {
+    "ParameterKey": "RagModelName",
+    "ParameterValue": "llama3.1:8b"
+  },
+  {
+    "ParameterKey": "OllamaModelsJson",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "CreateSnapshotOnSuccess",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "RequireBootstrapSuccess",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "SkipSplunkAppsBootstrap",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "ProvisionSharedInfrastructure",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "SharedResourceNamePrefix",
+    "ParameterValue": "ai-splunk-shared"
+  },
+  {
+    "ParameterKey": "ProvisionS3Buckets",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "ProvisionEcrRepositories",
+    "ParameterValue": "true"
+  }
+]

@@ -1,0 +1,6 @@
+[
+  { "ParameterKey": "EnvironmentName", "ParameterValue": "prod" },
+  { "ParameterKey": "InstanceType", "ParameterValue": "g6.8xlarge" },
+  { "ParameterKey": "RootVolumeSize", "ParameterValue": "200" },
+  { "ParameterKey": "ProvisionSharedInfrastructure", "ParameterValue": "false" }
+]

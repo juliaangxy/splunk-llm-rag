@@ -1,0 +1,90 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Security resources and ingress restrictions for Splunk AI services.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  AllowedSshCidr:
+    Type: String
+  AllowedSplunkUiCidr:
+    Type: String
+  AllowedDockerCidr:
+    Type: String
+  AllowedDsdlCidr:
+    Type: String
+  AllowedOllamaCidr:
+    Type: String
+  AllowedOllamaInternalCidr:
+    Type: String
+  AllowedMilvusCidr:
+    Type: String
+
+Resources:
+  SplunkAiSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access controls for Splunk AI platform.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSshCidr
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: !Ref AllowedSplunkUiCidr
+        - IpProtocol: tcp
+          FromPort: 8089
+          ToPort: 8089
+          CidrIp: 107.23.112.14/32
+          Description: Splunk Agent Mode management access
+        - IpProtocol: tcp
+          FromPort: 8089
+          ToPort: 8089
+          CidrIp: 3.221.64.88/32
+          Description: Splunk Agent Mode management access
+        - IpProtocol: tcp
+          FromPort: 8089
+          ToPort: 8089
+          CidrIp: 44.197.225.234/32
+          Description: Splunk Agent Mode management access
+        - IpProtocol: tcp
+          FromPort: 8089
+          ToPort: 8089
+          CidrIp: 44.216.116.179/32
+          Description: Splunk Agent Mode management access
+        - IpProtocol: tcp
+          FromPort: 8089
+          ToPort: 8089
+          CidrIp: 52.207.14.28/32
+          Description: Splunk Agent Mode management access
+        - IpProtocol: tcp
+          FromPort: 2375
+          ToPort: 2375
+          CidrIp: !Ref AllowedDockerCidr
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          CidrIp: !Ref AllowedDsdlCidr
+        - IpProtocol: tcp
+          FromPort: 11434
+          ToPort: 11434
+          CidrIp: !Ref AllowedOllamaCidr
+        - IpProtocol: tcp
+          FromPort: 11434
+          ToPort: 11434
+          CidrIp: !Ref AllowedOllamaInternalCidr
+        - IpProtocol: tcp
+          FromPort: 19530
+          ToPort: 19530
+          CidrIp: !Ref AllowedMilvusCidr
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+Outputs:
+  SecurityGroupId:
+    Value: !Ref SplunkAiSecurityGroup

@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: IAM role and instance profile with least privilege for EC2 and SSM.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+  LicenseBucket:
+    Type: String
+  SplunkPackageS3Key:
+    Type: String
+    Default: ''
+  SplunkPackageS3Prefix:
+    Type: String
+    Default: splunk-rpms/
+  CfnArtifactBucket:
+    Type: String
+  AiArtifactsBucket:
+    Type: String
+    Default: ''
+  OllamaModelS3Prefix:
+    Type: String
+    Default: models/huggingface/ollama/
+  SplunkAppsS3Prefix:
+    Type: String
+    Default: splunk-apps/
+
+Conditions:
+  HasSplunkPackageS3Key: !Not [!Equals [!Ref SplunkPackageS3Key, '']]
+  HasAiArtifactsBucket: !Not [!Equals [!Ref AiArtifactsBucket, '']]
+
+Resources:
+  SplunkAiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: LicenseS3ReadPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${LicenseBucket}/*'
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !Sub 'arn:aws:s3:::${LicenseBucket}'
+              - !If
+                - HasAiArtifactsBucket
+                - Effect: Allow
+                  Action:
+                    - s3:ListBucket
+                  Resource: !Sub 'arn:aws:s3:::${AiArtifactsBucket}'
+                - !Ref AWS::NoValue
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${LicenseBucket}/${SplunkAppsS3Prefix}*'
+              - !If
+                - HasSplunkPackageS3Key
+                - Effect: Allow
+                  Action:
+                    - s3:GetObject
+                  Resource: !Sub 'arn:aws:s3:::${LicenseBucket}/${SplunkPackageS3Key}'
+                - !Ref AWS::NoValue
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${LicenseBucket}/${SplunkPackageS3Prefix}*'
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !Sub 'arn:aws:s3:::${CfnArtifactBucket}'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${CfnArtifactBucket}/*'
+              - !If
+                - HasAiArtifactsBucket
+                - Effect: Allow
+                  Action:
+                    - s3:GetObject
+                  Resource: !Sub 'arn:aws:s3:::${AiArtifactsBucket}/*'
+                - !Ref AWS::NoValue
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:CreateSnapshot
+                  - ec2:CreateTags
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - cloudformation:SignalResource
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: '*'
+
+  SplunkAiInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref SplunkAiRole
+
+Outputs:
+  InstanceProfileName:
+    Value: !Ref SplunkAiInstanceProfile
+  RoleName:
+    Value: !Ref SplunkAiRole

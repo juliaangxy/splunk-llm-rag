@@ -1,0 +1,6 @@
+[
+  { "ParameterKey": "EnvironmentName", "ParameterValue": "staging" },
+  { "ParameterKey": "InstanceType", "ParameterValue": "g6.4xlarge" },
+  { "ParameterKey": "RootVolumeSize", "ParameterValue": "100" },
+  { "ParameterKey": "ProvisionSharedInfrastructure", "ParameterValue": "false" }
+]

@@ -1,0 +1,114 @@
+name: platform-deploy
+
+# Deploy the platform/ Splunk AI stack from GitHub's cloud runners so it keeps going
+# after you close/sleep your laptop. CloudFormation and the EC2 bootstrap run server-side
+# on AWS regardless; this job just launches and waits, streaming logs to the Actions UI.
+#
+# One-time setup (in the GitHub repo settings):
+#   Variables/Secrets -> Actions secrets:
+#     AWS_DEPLOY_ROLE_ARN     an IAM role this repo can assume via OIDC, with permissions for
+#                             CloudFormation, EC2, S3, ECR, IAM, Secrets Manager, EC2 Scheduler.
+#     SPLUNK_ADMIN_PASSWORD   Splunk admin password (stored in Secrets Manager by deploy.sh)
+#     ALLOWED_SSH_CIDR        e.g. 203.0.113.10/32
+#     ALLOWED_SPLUNK_UI_CIDR  e.g. 203.0.113.10/32
+#     HF_TOKEN                (optional) only if you switch to a gated model
+#     PROXY_API_KEY           (optional) else auto-generated
+#     SPLUNK_HEC_TOKEN        (optional) else auto-generated
+#   Also: the EC2 key pair named in platform/config/<env>.json (KeyName) must already exist
+#   in the target account/region.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Which environment to deploy
+        type: choice
+        options: [cloud, airgapped]
+        default: cloud
+      region:
+        description: AWS region
+        type: string
+        default: ap-southeast-1
+      safe_first_run:
+        description: "First run: don't roll back on bootstrap error, and skip vLLM/DSDL pulls (debug-friendly)"
+        type: boolean
+        default: true
+  # Validate-only on PRs touching platform/ (no AWS creds used).
+  pull_request:
+    paths: ['platform/**', '.github/workflows/platform-deploy.yml']
+
+permissions:
+  id-token: write     # for AWS OIDC
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install lint tools
+        run: |
+          python -m pip install --quiet cfn-lint
+          sudo apt-get update -y && sudo apt-get install -y shellcheck jq
+      - name: Offline validation gate
+        run: bash platform/validate.sh
+
+  deploy:
+    # Only on manual dispatch; PRs stop at validate.
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    concurrency:
+      group: platform-deploy-${{ github.event.inputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ github.event.inputs.region }}
+
+      - name: Write env secrets file
+        env:
+          SPLUNK_ADMIN_PASSWORD: ${{ secrets.SPLUNK_ADMIN_PASSWORD }}
+          ALLOWED_SSH_CIDR: ${{ secrets.ALLOWED_SSH_CIDR }}
+          ALLOWED_SPLUNK_UI_CIDR: ${{ secrets.ALLOWED_SPLUNK_UI_CIDR }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PROXY_API_KEY: ${{ secrets.PROXY_API_KEY }}
+          SPLUNK_HEC_TOKEN: ${{ secrets.SPLUNK_HEC_TOKEN }}
+          ENVIRONMENT: ${{ github.event.inputs.environment }}
+        run: |
+          f="platform/config/${ENVIRONMENT}.env"
+          {
+            echo "export SPLUNK_ADMIN_PASSWORD='${SPLUNK_ADMIN_PASSWORD}'"
+            echo "export ALLOWED_SSH_CIDR='${ALLOWED_SSH_CIDR}'"
+            echo "export ALLOWED_SPLUNK_UI_CIDR='${ALLOWED_SPLUNK_UI_CIDR}'"
+            [ -n "${HF_TOKEN}" ] && echo "export HF_TOKEN='${HF_TOKEN}'"
+            [ -n "${PROXY_API_KEY}" ] && echo "export PROXY_API_KEY='${PROXY_API_KEY}'"
+            [ -n "${SPLUNK_HEC_TOKEN}" ] && echo "export SPLUNK_HEC_TOKEN='${SPLUNK_HEC_TOKEN}'"
+          } > "$f"
+          echo "Wrote $f ($(grep -c '^export' "$f") vars)"
+
+      - name: Safe first-run tweaks
+        if: ${{ github.event.inputs.safe_first_run == 'true' }}
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment }}
+        run: |
+          f="platform/config/${ENVIRONMENT}.json"
+          tmp="$(mktemp)"
+          jq 'map(
+                if .ParameterKey=="RequireBootstrapSuccess" then .ParameterValue="false"
+                elif .ParameterKey=="DeployVllm" then .ParameterValue="false"
+                elif .ParameterKey=="AutoPullDsdlContainers" then .ParameterValue="false"
+                else . end)' "$f" > "$tmp" && mv "$tmp" "$f"
+          echo "Applied safe first-run flags to $f"
+
+      - name: Deploy
+        run: bash platform/deploy.sh "${{ github.event.inputs.environment }}" "${{ github.event.inputs.region }}"

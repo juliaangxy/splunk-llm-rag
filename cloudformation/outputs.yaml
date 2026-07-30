@@ -1,0 +1,33 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deployment outputs for service endpoints and access commands.
+
+Parameters:
+  ElasticIp:
+    Type: String
+  InstanceId:
+    Type: String
+
+Outputs:
+  ElasticIp:
+    Description: Public Elastic IP address
+    Value: !Ref ElasticIp
+
+  InstanceId:
+    Description: EC2 instance ID
+    Value: !Ref InstanceId
+
+  SplunkUrl:
+    Description: Splunk Web URL placeholder
+    Value: !Sub 'http://${ElasticIp}:8000'
+
+  OllamaUrl:
+    Description: Ollama endpoint URL
+    Value: !Sub 'http://${ElasticIp}:11434'
+
+  MilvusEndpoint:
+    Description: Milvus endpoint
+    Value: !Sub '${ElasticIp}:19530'
+
+  SshCommand:
+    Description: SSH command template
+    Value: !Sub 'ssh ec2-user@${ElasticIp}'
