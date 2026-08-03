@@ -1,0 +1,439 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Remote MCP server (EC2) exposing Amazon Bedrock Knowledge Base retrieval + web search over
+  the MCP Streamable HTTP transport, guarded by a bearer token. Optionally creates its own VPC,
+  or deploys into an existing one (e.g. the Splunk Enterprise VPC). Reachable from a Splunk
+  subnet CIDR and/or the internet.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: {default: Networking}
+        Parameters: [ExistingVpcId, ExistingIgwId, VpcCidr, SubnetCidr, SplunkCidr, AllowInternetAccess, McpPort]
+      - Label: {default: MCP capabilities}
+        Parameters: [BedrockKnowledgeBaseId, BedrockRegion, WebSearchProvider, WebSearchApiKey, SearxngUrl]
+      - Label: {default: Instance}
+        Parameters: [InstanceType, KeyName, LatestAmiId, TlsMode, CodeS3Bucket, CodeS3Prefix, RepoUrl, RepoBranch]
+
+Parameters:
+  ExistingVpcId:
+    Type: String
+    Default: ''
+    Description: VPC id to deploy into (e.g. the Splunk VPC). LEAVE EMPTY to create a new VPC.
+  ExistingIgwId:
+    Type: String
+    Default: ''
+    Description: >-
+      Internet Gateway id ALREADY attached to ExistingVpcId. REQUIRED when ExistingVpcId is set —
+      the new subnet routes 0.0.0.0/0 to it (instance egress + optional internet inbound).
+      Ignored when creating a new VPC.
+  VpcCidr:
+    Type: String
+    Default: 10.20.0.0/16
+    Description: CIDR for the new VPC (only when ExistingVpcId is empty).
+  SubnetCidr:
+    Type: String
+    Default: 10.20.1.0/24
+    Description: >-
+      CIDR for the NEW subnet the MCP server is always placed in. Must be a FREE range inside the
+      VPC (new or existing) that does not overlap any current subnet.
+  SplunkCidr:
+    Type: String
+    Default: ''
+    Description: >-
+      CIDR of the Splunk Enterprise subnet allowed to reach the MCP port (e.g. 10.0.5.0/24).
+      Leave empty to not add a Splunk ingress rule.
+  AllowInternetAccess:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: If true, open the MCP port to 0.0.0.0/0 and attach an Elastic IP.
+  McpPort:
+    Type: Number
+    Default: 8000
+    Description: TCP port the MCP server listens on.
+  BedrockKnowledgeBaseId:
+    Type: String
+    Default: ''
+    Description: Amazon Bedrock Knowledge Base id the retrieve tool queries.
+  BedrockRegion:
+    Type: String
+    Default: ''
+    Description: Region of the Bedrock Knowledge Base. Empty = this stack's region.
+  WebSearchProvider:
+    Type: String
+    Default: tavily
+    AllowedValues: [searxng, duckduckgo, tavily, brave, none]
+    Description: >-
+      Web-search backend. Open-source/keyless: 'searxng' (self-hosted, set SearxngUrl) or
+      'duckduckgo'. Commercial (need WebSearchApiKey): 'tavily' | 'brave'. 'none' disables it.
+  WebSearchApiKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: API key for tavily/brave (stored in Secrets Manager). Not needed for searxng/duckduckgo.
+  SearxngUrl:
+    Type: String
+    Default: ''
+    Description: >-
+      Only for WebSearchProvider=searxng. Base URL of an EXISTING SearXNG (JSON API enabled),
+      e.g. https://searxng.internal:8888. LEAVE EMPTY to install SearXNG on THIS instance
+      (Docker, bound to localhost) automatically.
+  InstanceType:
+    Type: String
+    Default: t3.small
+  KeyName:
+    Type: String
+    Default: ''
+    Description: Optional EC2 key pair for SSH. Leave empty to rely on SSM Session Manager.
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: Amazon Linux 2023 AMI (resolved from the SSM public parameter).
+  TlsMode:
+    Type: String
+    Default: self-signed
+    AllowedValues: [self-signed, none]
+    Description: >-
+      self-signed = the server serves HTTPS with an auto-generated cert (recommended for
+      internet exposure; clients must skip cert verification). none = plain HTTP.
+  CodeS3Bucket:
+    Type: String
+    Default: ''
+    Description: >-
+      S3 bucket holding the server code (mcp_server.py + requirements.txt). RECOMMENDED,
+      and REQUIRED for private repos — the instance pulls the code from here via its IAM role
+      (no git credentials). Empty falls back to a git clone of RepoUrl (public repos only).
+  CodeS3Prefix:
+    Type: String
+    Default: mcp-server
+    Description: Key prefix under CodeS3Bucket where mcp_server.py + requirements.txt live.
+  RepoUrl:
+    Type: String
+    Default: https://github.com/juliaangxy/splunk-llm-rag.git
+    Description: Public git repo to clone when CodeS3Bucket is empty. Ignored when using S3.
+  RepoBranch:
+    Type: String
+    Default: main
+
+Conditions:
+  CreateVpc: !Equals [!Ref ExistingVpcId, '']
+  UseExistingVpc: !Not [!Equals [!Ref ExistingVpcId, '']]
+  HasSplunkCidr: !Not [!Equals [!Ref SplunkCidr, '']]
+  EnableInternet: !Equals [!Ref AllowInternetAccess, 'true']
+  HasKeyName: !Not [!Equals [!Ref KeyName, '']]
+  HasSearchKey: !Not [!Equals [!Ref WebSearchApiKey, '']]
+  HasBedrockRegion: !Not [!Equals [!Ref BedrockRegion, '']]
+  SelfSignedTls: !Equals [!Ref TlsMode, 'self-signed']
+  UseS3Code: !Not [!Equals [!Ref CodeS3Bucket, '']]
+
+Rules:
+  RequireIgwForExistingVpc:
+    RuleCondition: !Not [!Equals [!Ref ExistingVpcId, '']]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref ExistingIgwId, '']]
+        AssertDescription: ExistingIgwId is required when ExistingVpcId is set (the new subnet routes to it).
+
+Resources:
+  # ---- New VPC (only when ExistingVpcId is empty) --------------------------------------
+  Vpc:
+    Type: AWS::EC2::VPC
+    Condition: CreateVpc
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-vpc'}]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Condition: CreateVpc
+    Properties:
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-igw'}]
+
+  IgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Condition: CreateVpc
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # The MCP server ALWAYS gets its own new subnet (in the new or existing VPC), its own route
+  # table, and a default route to an internet gateway (created here, or the existing one).
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
+      CidrBlock: !Ref SubnetCidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-subnet'}]
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-rt'}]
+
+  DefaultRouteNew:
+    Type: AWS::EC2::Route
+    Condition: CreateVpc
+    DependsOn: IgwAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  DefaultRouteExisting:
+    Type: AWS::EC2::Route
+    Condition: UseExistingVpc
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref ExistingIgwId
+
+  SubnetRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref Subnet
+
+  # ---- Security group + ingress --------------------------------------------------------
+  McpSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'MCP server ${AWS::StackName} - inbound on the MCP port'
+      VpcId: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
+      SecurityGroupEgress:
+        - {IpProtocol: '-1', CidrIp: 0.0.0.0/0, Description: 'All egress (Bedrock, search API, updates)'}
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-sg'}]
+
+  IngressFromSplunk:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasSplunkCidr
+    Properties:
+      GroupId: !Ref McpSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref McpPort
+      ToPort: !Ref McpPort
+      CidrIp: !Ref SplunkCidr
+      Description: Splunk subnet -> MCP
+
+  IngressFromInternet:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: EnableInternet
+    Properties:
+      GroupId: !Ref McpSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref McpPort
+      ToPort: !Ref McpPort
+      CidrIp: 0.0.0.0/0
+      Description: Internet -> MCP (guarded by bearer token)
+
+  # ---- Secrets -------------------------------------------------------------------------
+  AuthTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${AWS::StackName}-mcp-auth-token'
+      Description: Bearer token clients must present to the MCP server.
+      GenerateSecretString:
+        PasswordLength: 48
+        ExcludePunctuation: true
+
+  SearchApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: HasSearchKey
+    Properties:
+      Name: !Sub '${AWS::StackName}-mcp-search-api-key'
+      Description: Web-search provider API key used by the MCP server.
+      SecretString: !Ref WebSearchApiKey
+
+  # ---- Instance role -------------------------------------------------------------------
+  McpRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      Policies:
+        - PolicyName: mcp-runtime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: BedrockKnowledgeBaseRetrieve
+                Effect: Allow
+                Action: [bedrock:Retrieve, bedrock:RetrieveAndGenerate]
+                Resource: !Sub
+                  - 'arn:${AWS::Partition}:bedrock:${Region}:${AWS::AccountId}:knowledge-base/*'
+                  - Region: !If [HasBedrockRegion, !Ref BedrockRegion, !Ref 'AWS::Region']
+              - Sid: ReadSecrets
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !If
+                  - HasSearchKey
+                  - [!Ref AuthTokenSecret, !Ref SearchApiKeySecret]
+                  - [!Ref AuthTokenSecret]
+              - !If
+                - UseS3Code
+                - Sid: ReadServerCode
+                  Effect: Allow
+                  Action: s3:GetObject
+                  Resource: !Sub 'arn:${AWS::Partition}:s3:::${CodeS3Bucket}/${CodeS3Prefix}/*'
+                - !Ref 'AWS::NoValue'
+
+  McpInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref McpRole]
+
+  # ---- Instance ------------------------------------------------------------------------
+  McpInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref McpInstanceProfile
+      KeyName: !If [HasKeyName, !Ref KeyName, !Ref 'AWS::NoValue']
+      SubnetId: !Ref Subnet
+      SecurityGroupIds: [!Ref McpSecurityGroup]
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-mcp'}]
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -euxo pipefail
+
+            # Wait for outbound internet: on a freshly created VPC the IGW route may attach a
+            # moment after boot, and the instance needs egress for dnf/pip below. (An existing
+            # PRIVATE subnet must provide egress via a NAT gateway, or this loop times out.)
+            n=0
+            while [ "$n" -lt 60 ]; do
+              if curl -sf -o /dev/null --max-time 3 https://s3.${AWS::Region}.amazonaws.com; then break; fi
+              n=$((n + 1)); sleep 5
+            done
+
+            dnf install -y python3 python3-pip git openssl
+
+            install -d /opt/mcp/src/mcp/server
+            python3 -m venv /opt/mcp/venv
+            /opt/mcp/venv/bin/pip install --upgrade pip
+            # Fetch the server code. Prefer S3 (works for PRIVATE repos, via the instance role);
+            # fall back to git clone only when no CodeS3Bucket is given (public repos).
+            if [ -n "${CodeS3Bucket}" ]; then
+              aws s3 cp "s3://${CodeS3Bucket}/${CodeS3Prefix}/mcp_server.py"  /opt/mcp/src/mcp/server/mcp_server.py
+              aws s3 cp "s3://${CodeS3Bucket}/${CodeS3Prefix}/requirements.txt" /opt/mcp/src/mcp/server/requirements.txt
+            elif [ -d /opt/mcp/src/.git ]; then
+              git -C /opt/mcp/src fetch --depth 1 origin ${RepoBranch}
+              git -C /opt/mcp/src reset --hard FETCH_HEAD
+            else
+              git clone --depth 1 --branch ${RepoBranch} ${RepoUrl} /opt/mcp/src
+            fi
+            /opt/mcp/venv/bin/pip install -r /opt/mcp/src/mcp/server/requirements.txt
+
+            # Optional self-signed TLS so internet-exposed endpoints are HTTPS out of the box.
+            if [ "${TlsMode}" = "self-signed" ]; then
+              install -d /opt/mcp/tls
+              if [ ! -f /opt/mcp/tls/server.crt ]; then
+                TOK=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60" || true)
+                PUBIP=$(curl -s -H "X-aws-ec2-metadata-token: $TOK" http://169.254.169.254/latest/meta-data/public-ipv4 || true)
+                CN="$PUBIP"; [ -z "$CN" ] && CN=$(hostname -f)
+                openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+                  -keyout /opt/mcp/tls/server.key -out /opt/mcp/tls/server.crt -subj "/CN=$CN"
+              fi
+            fi
+
+            # Co-locate SearXNG (open-source search) on THIS instance when the provider is 'searxng'
+            # and no external SearxngUrl was given. Bound to localhost:8888 so it is never exposed
+            # externally; only the MCP port is. JSON format is enabled in its settings.
+            SEARXNG_EFF="${SearxngUrl}"
+            if [ "${WebSearchProvider}" = "searxng" ] && [ -z "${SearxngUrl}" ]; then
+              dnf install -y docker
+              systemctl enable --now docker
+              install -d /opt/searxng
+              SXNG_SECRET=$(openssl rand -hex 32)
+              printf 'use_default_settings: true\nserver:\n  secret_key: "%s"\nsearch:\n  formats:\n    - html\n    - json\n' "$SXNG_SECRET" > /opt/searxng/settings.yml
+              docker rm -f searxng 2>/dev/null || true
+              docker run -d --name searxng --restart always \
+                -p 127.0.0.1:8888:8080 -v /opt/searxng:/etc/searxng:rw \
+                searxng/searxng:latest
+              SEARXNG_EFF="http://127.0.0.1:8888"
+            fi
+
+            cat > /opt/mcp/mcp.env <<ENVEOF
+            MCP_HOST=0.0.0.0
+            MCP_PORT=${McpPort}
+            MCP_PATH=/mcp
+            AWS_REGION=${AWS::Region}
+            BEDROCK_KB_ID=${BedrockKnowledgeBaseId}
+            BEDROCK_REGION=${BedrockRegionEff}
+            SEARCH_PROVIDER=${WebSearchProvider}
+            SEARXNG_URL=$SEARXNG_EFF
+            AUTH_TOKEN_SECRET_ARN=${AuthArn}
+            SEARCH_API_KEY_SECRET_ARN=${SearchArn}
+            ENVEOF
+            if [ "${TlsMode}" = "self-signed" ]; then
+              echo "MCP_TLS_CERT=/opt/mcp/tls/server.crt" >> /opt/mcp/mcp.env
+              echo "MCP_TLS_KEY=/opt/mcp/tls/server.key" >> /opt/mcp/mcp.env
+            fi
+
+            cat > /etc/systemd/system/mcp-server.service <<'UNITEOF'
+            [Unit]
+            Description=MCP server (Bedrock KB + web search)
+            After=network-online.target
+            Wants=network-online.target
+            [Service]
+            EnvironmentFile=/opt/mcp/mcp.env
+            ExecStart=/opt/mcp/venv/bin/python /opt/mcp/src/mcp/server/mcp_server.py
+            Restart=always
+            RestartSec=3
+            [Install]
+            WantedBy=multi-user.target
+            UNITEOF
+
+            systemctl daemon-reload
+            systemctl enable --now mcp-server.service
+          - AuthArn: !Ref AuthTokenSecret
+            SearchArn: !If [HasSearchKey, !Ref SearchApiKeySecret, '']
+            BedrockRegionEff: !If [HasBedrockRegion, !Ref BedrockRegion, !Ref 'AWS::Region']
+
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    Condition: EnableInternet
+    Properties:
+      Domain: vpc
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-eip'}]
+
+  ElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Condition: EnableInternet
+    Properties:
+      AllocationId: !GetAtt ElasticIp.AllocationId
+      InstanceId: !Ref McpInstance
+
+Outputs:
+  McpEndpoint:
+    Description: Point MCP clients (with the bearer token) at this URL.
+    Value: !Sub
+      - '${Scheme}://${Host}:${McpPort}/mcp'
+      - Scheme: !If [SelfSignedTls, 'https', 'http']
+        Host: !If [EnableInternet, !Ref ElasticIp, !GetAtt McpInstance.PrivateIp]
+  AuthTokenSecretArn:
+    Description: Secrets Manager ARN holding the bearer token.
+    Value: !Ref AuthTokenSecret
+  GetAuthTokenCommand:
+    Description: Run this to read the bearer token clients must send.
+    Value: !Sub 'aws secretsmanager get-secret-value --secret-id ${AuthTokenSecret} --query SecretString --output text --region ${AWS::Region}'
+  InstanceId:
+    Value: !Ref McpInstance
+  SecurityGroupId:
+    Value: !Ref McpSecurityGroup
+  VpcId:
+    Value: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
+  SubnetId:
+    Description: The NEW subnet created for the MCP server.
+    Value: !Ref Subnet
