@@ -1,7 +1,7 @@
 # Splunk AI Platform — two-instance, two-environment
 
-A self-contained rebuild of the deployment that provisions **two EC2 instances per
-environment** across **two environments that share one VPC**:
+Provisions **two EC2 instances per environment** across **two environments that share one
+VPC**:
 
 - **GPU host** (`g4dn.4xlarge`) — Splunk Enterprise + the full Dockerized AI stack
   (Ollama serving **Foundation-Sec-8B** and **llama3.1**, Milvus/MinIO/etcd, DSDL/MLTK
@@ -16,9 +16,6 @@ environment** across **two environments that share one VPC**:
 - **`airgapped`** environment — same VPC, but **no internet egress**: every artifact comes
   from S3 and every image from ECR via VPC endpoints. It stays directly reachable on 22/8000
   for convenience (see *How the airgap works*).
-
-This folder is independent of the original top-level `cloudformation/` + `scripts/` project,
-which is left untouched.
 
 ## Architecture
 
@@ -371,11 +368,6 @@ The two S3 buckets and the ECR repository use `DeletionPolicy: Retain` — empty
 them manually if you want them gone.
 
 # Appendix
-
-## What this folder deliberately omits
-Relative to the original project, the token-counting stage (`11-*`), its webhook/example/docs,
-the duplicate `outputs.yaml`, and the `AITK-*`/`TOKEN-COUNTING-*`/`DEPLOYMENT-CHECKLIST`
-files are **not** carried over, to keep this a lean rebuild. They remain in the original tree.
 
 ## Airgap caveats
 `dnf` works airgapped (Amazon Linux 2023 repos are S3-backed). The NVIDIA container-toolkit
