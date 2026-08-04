@@ -136,6 +136,14 @@
     "ParameterValue": "false"
   },
   {
+    "ParameterKey": "SplunkDataTargets",
+    "ParameterValue": "search-head,gpu"
+  },
+  {
+    "ParameterKey": "SplunkDataDurationMin",
+    "ParameterValue": "60"
+  },
+  {
     "ParameterKey": "TokenMeterRoutesJson",
     "ParameterValue": "[]"
   },

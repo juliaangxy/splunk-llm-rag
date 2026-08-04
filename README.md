@@ -168,7 +168,7 @@ What deployment sets up automatically:
 
 ### How token counting works
 > **Adding metering to a deployment that already runs Ollama/vLLM + Splunk (outside this
-> platform)?** See **[TOKEN-METERING-INSTALL.md](TOKEN-METERING-INSTALL.md)** — a
+> platform)?** See **[TOKEN-METERING-INSTALL.md](scripts/token-meter/TOKEN-METERING-INSTALL.md)** — a
 > standalone guide using `11-token-metrics.sh` + `start-token-meter-proxies.sh`.
 
 A tiny [token-meter proxy](token-meter-proxy/README.md) sits in front of a model server,
@@ -301,7 +301,7 @@ deploy time), so the airgapped environment upgrades the same way as the cloud on
 What the script does each run:
 - Installs the newest matching package for each selected app (`splunk install app -update 1`).
 - If DSDL was upgraded, reads the app's new `mltk-container/default/images.conf` to learn the
-  image URIs it now expects (`scripts/dsdl_images_conf_to_manifest.py`), **compares them to what
+  image URIs it now expects (`scripts/dsdl/dsdl_images_conf_to_manifest.py`), **compares them to what
   the instance currently uses**, and for each changed URI: (GPU host) pulls the new image, pushes
   it to ECR, re-pulls it locally, removes stale containers so the new image is used, and rewrites
   `mltk-container/local/images.conf` to the new ECR references. The search head (no local dockerd)
@@ -331,10 +331,10 @@ Reach either instance over SSH or SSM Session Manager. Use `--apps` to select a 
 The instances can't reach Docker Hub, so pre-seed the new default images into ECR from a
 connected operator machine **before** upgrading (same S3/ECR pathway as deploy):
 1. Upload the newer app package(s) to the apps bucket (as in the cloud steps above).
-2. Update `scripts/dsdl-default-images.json` to the new DSDL version, then on a connected machine
+2. Update `scripts/dsdl/dsdl-default-images.json` to the new DSDL version, then on a connected machine
    (`ECR_REGISTRY_URI`/`ECR_REPOSITORY_NAME` already exported above):
    ```bash
-   ./scripts/seed-default-dsdl-images.sh "$REGION"
+   ./scripts/dsdl/seed-default-dsdl-images.sh "$REGION"
    ```
 3. On the GPU host, then the search head:
    ```bash
@@ -372,13 +372,13 @@ be seeded into ECR and DSDL/AITK told to pull them from there. This follows the 
 guidance ("push to a local registry … update `images.conf` to point to your internal registry
 references").
 
-- **`scripts/dsdl-default-images.json`** — the single source of truth: the 10 default images
+- **`scripts/dsdl/dsdl-default-images.json`** — the single source of truth: the 10 default images
   from `mltk-container/default/images.conf` (DSDL 5.2.4), each with its Docker Hub source and
   the tag it gets inside the shared ECR repo.
-- **`scripts/seed-default-dsdl-images.sh <region>`** — run on a connected operator machine
+- **`scripts/dsdl/seed-default-dsdl-images.sh <region>`** — run on a connected operator machine
   (Docker + internet): pulls each default image from Docker Hub and pushes it to ECR.
   `deploy.sh airgapped …` runs this automatically.
-- **`scripts/generate_default_images_conf.py`** — runs on each instance during
+- **`scripts/dsdl/generate_default_images_conf.py`** — runs on each instance during
   `09-configure-{gpu,searchhead}.sh` when `AIRGAPPED=true`: writes
   `mltk-container/local/images.conf` (which overrides `default/`) with every default stanza's
   `repo`/`image` repointed at ECR, keeping `title`/`runtime`. DSDL builds its pull reference as

@@ -57,7 +57,7 @@ configure_mltk_container_profiles() {
     ECR_REPOSITORY_NAME="${ECR_REPOSITORY_NAME:-}" \
     DSDL_DOCKER_HOST="${DSDL_DOCKER_HOST}" \
     CONTAINERS_CONF_PATH="${containers_conf}" \
-    python3 "${SCRIPT_DIR}/generate_containers_conf.py"
+    python3 "${SCRIPT_DIR}/dsdl/generate_containers_conf.py"
   else
     cat > "${containers_conf}" <<EOF
 [default]
@@ -93,7 +93,7 @@ configure_mltk_container_images() {
     ECR_REGISTRY_URI="${ECR_REGISTRY_URI}" \
     ECR_REPOSITORY_NAME="${ECR_REPOSITORY_NAME}" \
     IMAGES_CONF_PATH="${images_conf}" \
-    python3 "${SCRIPT_DIR}/generate_default_images_conf.py"
+    python3 "${SCRIPT_DIR}/dsdl/generate_default_images_conf.py"
   elif [[ -n "${CONTAINER_IMAGE_PROFILES_JSON}" ]]; then
     require_cmd python3
     log "Generating images.conf from CONTAINER_IMAGE_PROFILES_JSON"
@@ -101,7 +101,7 @@ configure_mltk_container_images() {
     ECR_REGISTRY_URI="${ECR_REGISTRY_URI:-}" \
     ECR_REPOSITORY_NAME="${ECR_REPOSITORY_NAME:-}" \
     IMAGES_CONF_PATH="${images_conf}" \
-    python3 "${SCRIPT_DIR}/generate_images_conf.py"
+    python3 "${SCRIPT_DIR}/dsdl/generate_images_conf.py"
   else
     cat > "${images_conf}" <<EOF
 [default]

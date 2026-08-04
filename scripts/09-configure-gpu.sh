@@ -20,7 +20,7 @@ DEFAULT_DSDL_CPU_INFERENCE_IMAGE="splunk/dsdl-images:deep-learning-backbone-cpu"
 DSDL_CPU_INFERENCE_CONTAINER_NAME="${DSDL_CPU_INFERENCE_CONTAINER_NAME:-dsdl-cpu-inference}"
 DSDL_CPU_INFERENCE_PORT="${DSDL_CPU_INFERENCE_PORT:-5002}"
 DSDL_CPU_INFERENCE_RUN_AS_ROOT="${DSDL_CPU_INFERENCE_RUN_AS_ROOT:-auto}"
-DSDL_INTEGRATION_SCRIPT_SOURCE="${DSDL_INTEGRATION_SCRIPT_SOURCE:-/opt/splunk-ai/scripts/minilm_embedding.py}"
+DSDL_INTEGRATION_SCRIPT_SOURCE="${DSDL_INTEGRATION_SCRIPT_SOURCE:-/opt/splunk-ai/scripts/dsdl/minilm_embedding.py}"
 DSDL_INTEGRATION_SCRIPT_BASENAME="${DSDL_INTEGRATION_SCRIPT_BASENAME:-minilm_embedding.py}"
 DSDL_INTEGRATION_SCRIPT_HOST_DIR="${DSDL_INTEGRATION_SCRIPT_HOST_DIR:-/opt/splunk-ai/dsdl-notebooks/custom}"
 DSDL_INTEGRATION_SCRIPT_CONTAINER_DIR="${DSDL_INTEGRATION_SCRIPT_CONTAINER_DIR:-/srv/app/notebooks/custom}"
@@ -490,7 +490,7 @@ configure_mltk_container_profiles() {
 		ECR_REPOSITORY_NAME="${ECR_REPOSITORY_NAME:-}" \
 		DSDL_DOCKER_HOST="${DSDL_DOCKER_HOST:-tcp://127.0.0.1:2375}" \
 		CONTAINERS_CONF_PATH="${containers_conf}" \
-		python3 "${SCRIPT_DIR}/generate_containers_conf.py"
+		python3 "${SCRIPT_DIR}/dsdl/generate_containers_conf.py"
 	else
 		cat > "${containers_conf}" <<EOF
 [default]
@@ -526,7 +526,7 @@ configure_mltk_container_images() {
 		ECR_REGISTRY_URI="${ECR_REGISTRY_URI}" \
 		ECR_REPOSITORY_NAME="${ECR_REPOSITORY_NAME}" \
 		IMAGES_CONF_PATH="${images_conf}" \
-		python3 "${SCRIPT_DIR}/generate_default_images_conf.py"
+		python3 "${SCRIPT_DIR}/dsdl/generate_default_images_conf.py"
 	elif container_profiles_json_is_set; then
 		require_cmd python3
 		log "Generating images.conf from CONTAINER_IMAGE_PROFILES_JSON"
@@ -534,7 +534,7 @@ configure_mltk_container_images() {
 		ECR_REGISTRY_URI="${ECR_REGISTRY_URI:-}" \
 		ECR_REPOSITORY_NAME="${ECR_REPOSITORY_NAME:-}" \
 		IMAGES_CONF_PATH="${images_conf}" \
-		python3 "${SCRIPT_DIR}/generate_images_conf.py"
+		python3 "${SCRIPT_DIR}/dsdl/generate_images_conf.py"
 	else
 		cat > "${images_conf}" <<EOF
 [default]
@@ -554,6 +554,26 @@ ensure_dsdl_docker_network() {
 		log "Creating Docker network ${DSDL_DOCKER_NETWORK} for DSDL containers"
 		docker network create "${DSDL_DOCKER_NETWORK}" >/dev/null
 	fi
+}
+
+configure_mltk_docker_connection() {
+	local mltk_local_dir="${SPLUNK_HOME}/etc/apps/mltk-container/local"
+	local docker_conf="${mltk_local_dir}/docker.conf"
+
+	mkdir -p "${mltk_local_dir}"
+
+	cat > "${docker_conf}" <<EOF
+[connection]
+docker_host = unix:///var/run/docker.sock
+splunk_hec_enabled = 0
+EOF
+
+	if id -u splunk >/dev/null 2>&1; then
+		chown -R splunk:splunk "${mltk_local_dir}"
+	fi
+	chmod 0755 "${mltk_local_dir}"
+	chmod 0644 "${docker_conf}"
+	log "Pre-seeded mltk-container docker.conf [connection] stanza"
 }
 
 configure_dsdl_endpoint() {
@@ -670,6 +690,7 @@ stage_minilm_integration_script
 deploy_dsdl_cpu_inference_container
 configure_mltk_container_profiles
 configure_mltk_container_images
+configure_mltk_docker_connection
 configure_dsdl_endpoint
 # Register the vLLM (OpenAI) + Ollama LLM endpoints. Default DIRECT-to-model so models
 # work without the proxy; switch to metered proxy later with configure-splunk-llm.sh --mode proxy.

@@ -160,6 +160,15 @@ Parameters:
   TokenMeterDefaultRole:
     Type: String
     Default: search-head
+  SplunkDataTargets:
+    Type: String
+    Default: 'search-head,gpu'
+    AllowedValues: ['none', 'search-head', 'gpu', 'search-head,gpu']
+    Description: Which instances backfill demo incident data at boot. The GPU host acts only when 'gpu' is in the list.
+  SplunkDataDurationMin:
+    Type: Number
+    Default: 60
+    Description: Minutes of historical demo data to backfill (1-1440). Used only when this host is targeted.
 
 Resources:
   GpuInstance:
@@ -245,6 +254,9 @@ Resources:
           export ENVIRONMENT_NAME='${EnvironmentName}'
           export TOKEN_METER_ROUTES='${TokenMeterRoutesJson}'
           export TOKEN_METER_DEFAULT_ROLE='${TokenMeterDefaultRole}'
+          export SPLUNK_DATA_TARGETS='${SplunkDataTargets}'
+          export SPLUNK_DATA_SELF='gpu'
+          export SPLUNK_DATA_DURATION_MIN='${SplunkDataDurationMin}'
           export VLLM_IMAGE='${VllmImage}'
           export VLLM_MODEL='${VllmModel}'
           export VLLM_MODEL_NAME='${VllmModelName}'

@@ -257,7 +257,7 @@ if [[ "${SEED_ECR}" == "true" ]]; then
     # Airgapped: seed ALL default Splunk DSDL images (so any default image can be
     # started from ECR), plus the non-DSDL infra images (Ollama/Milvus/etcd/MinIO/CUDA).
     ECR_REGISTRY_URI="${ECR_REGISTRY_URI}" ECR_REPOSITORY_NAME="${ECR_REPOSITORY_NAME}" \
-      "${PLATFORM_DIR}/scripts/seed-default-dsdl-images.sh" "${REGION}"
+      "${PLATFORM_DIR}/scripts/dsdl/seed-default-dsdl-images.sh" "${REGION}"
     ECR_REGISTRY_URI="${ECR_REGISTRY_URI}" ECR_REPOSITORY_NAME="${ECR_REPOSITORY_NAME}" \
       "${REPO_ROOT}/utils/push-docker-images-to-ecr.sh" "${REGION}" \
         "${OLLAMA_SRC}=${ECR_REPOSITORY_NAME}" "${ETCD_SRC}=${ECR_REPOSITORY_NAME}" \

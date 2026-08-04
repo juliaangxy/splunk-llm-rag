@@ -232,5 +232,11 @@ chown splunk:splunk "${SPLUNK_HOME}/etc/system/local/user-seed.conf"
 run_splunk_start
 log "Configuring Splunk boot-start"
 "${SPLUNK_HOME}/bin/splunk" enable boot-start -user splunk --accept-license --answer-yes --no-prompt
+
+if ! id -nG splunk | tr ' ' '\n' | grep -qx docker; then
+	usermod -aG docker splunk
+	log "Added splunk user to docker group"
+fi
+
 su -s /bin/bash splunk -c "${SPLUNK_HOME}/bin/splunk status"
 log "Splunk Enterprise is installed and running"

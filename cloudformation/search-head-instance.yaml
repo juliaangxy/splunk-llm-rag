@@ -100,6 +100,15 @@ Parameters:
   TokenMeterDefaultRole:
     Type: String
     Default: search-head
+  SplunkDataTargets:
+    Type: String
+    Default: 'search-head,gpu'
+    AllowedValues: ['none', 'search-head', 'gpu', 'search-head,gpu']
+    Description: Which instances backfill demo incident data at boot. The search head acts only when 'search-head' is in the list.
+  SplunkDataDurationMin:
+    Type: Number
+    Default: 60
+    Description: Minutes of historical demo data to backfill (1-1440). Used only when this instance is targeted (see SplunkDataTargets).
 
 Resources:
   SearchHeadInstance:
@@ -169,6 +178,9 @@ Resources:
           export VLLM_MODEL_NAME='${VllmModelName}'
           export DEPLOY_TOKEN_METER_PROXY='${DeployTokenMeterProxy}'
           export REQUIRE_BOOTSTRAP_SUCCESS='${RequireBootstrapSuccess}'
+          export SPLUNK_DATA_TARGETS='${SplunkDataTargets}'
+          export SPLUNK_DATA_SELF='search-head'
+          export SPLUNK_DATA_DURATION_MIN='${SplunkDataDurationMin}'
           ENVVARS
           chmod 600 /opt/splunk-ai/bootstrap.env
 

@@ -100,6 +100,10 @@ if ! id -nG ec2-user | tr ' ' '\n' | grep -qx docker; then
 	usermod -aG docker ec2-user
 fi
 
+if id -u splunk >/dev/null 2>&1 && ! id -nG splunk | tr ' ' '\n' | grep -qx docker; then
+	usermod -aG docker splunk
+fi
+
 docker version >/dev/null
 if docker compose version >/dev/null 2>&1; then
 	docker compose version >/dev/null

@@ -38,10 +38,11 @@ stages=(
   "08-apps.sh"
   "11-token-metrics.sh"
   "09-configure-searchhead.sh"
+  "datagen/populate-splunk-data.sh"
 )
 
 for stage in "${stages[@]}"; do
-  checkpoint_file="${CHECKPOINT_DIR}/${stage}.done"
+  checkpoint_file="${CHECKPOINT_DIR}/${stage//\//_}.done"
   step="${SCRIPT_DIR}/${stage}"
 
   if [[ -f "${checkpoint_file}" ]]; then

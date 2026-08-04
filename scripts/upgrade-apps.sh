@@ -175,7 +175,7 @@ reconcile_dsdl_images() {
 
   local manifest="${WORK_DIR}/dsdl-images-current.json"
   log "Deriving expected image set from upgraded DSDL app"
-  python3 "${SCRIPT_DIR}/dsdl_images_conf_to_manifest.py" "${DEFAULT_IMAGES_CONF}" > "${manifest}"
+  python3 "${SCRIPT_DIR}/dsdl/dsdl_images_conf_to_manifest.py" "${DEFAULT_IMAGES_CONF}" > "${manifest}"
 
   # Desired ECR refs from the manifest.
   local repo_uri="${ECR_REGISTRY_URI}/${ECR_REPOSITORY_NAME}"
@@ -246,7 +246,7 @@ reconcile_dsdl_images() {
   log "Rewriting ${LOCAL_IMAGES_CONF} to reconciled ECR references"
   ECR_REGISTRY_URI="${ECR_REGISTRY_URI}" ECR_REPOSITORY_NAME="${ECR_REPOSITORY_NAME}" \
   DSDL_IMAGES_MANIFEST="${manifest}" IMAGES_CONF_PATH="${LOCAL_IMAGES_CONF}" \
-  python3 "${SCRIPT_DIR}/generate_default_images_conf.py"
+  python3 "${SCRIPT_DIR}/dsdl/generate_default_images_conf.py"
   if id -u splunk >/dev/null 2>&1; then chown splunk:splunk "${LOCAL_IMAGES_CONF}"; fi
   chmod 0644 "${LOCAL_IMAGES_CONF}"
 }

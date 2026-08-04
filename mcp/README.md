@@ -53,6 +53,31 @@ instance clones `RepoUrl` instead.)
 
 ## Deploy
 
+### Quick deploy (env file + KB auto-discovery) — recommended
+
+Copy the example env, edit it, and run the wrapper. It **auto-discovers your Bedrock KB id** (by
+name, in `BedrockRegion`) so you don't have to paste it, then runs the CloudFormation deploy:
+
+```bash
+cp mcp/mcp.env.example mcp/mcp.env      # usually only BedrockRegion + CodeS3Bucket need editing
+bash mcp/deploy-mcp.sh                  # auto-resolves VPC/IGW/subnet + KB id, then deploys
+bash mcp/deploy-mcp.sh --dry-run        # print the resolved deploy command first
+bash mcp/deploy-mcp.sh --no-discover-kb # use BedrockKnowledgeBaseId from the env as-is
+```
+
+The wrapper fills in as much as it can from your account, so most of the env can stay blank:
+
+| Value | Auto-resolved from |
+|---|---|
+| `BedrockKnowledgeBaseId` | KB named `KB_NAME` (default `splunk-ai-kb`) in `BedrockRegion`, or the only KB there |
+| `ExistingVpcId` | `PLATFORM_NET_STACK` output `VpcId`, else a VPC tagged `Name=splunk-ai-vpc` |
+| `ExistingIgwId` | the internet gateway attached to that VPC |
+| `SplunkCidr` | the VPC CIDR (whole VPC may reach the port) |
+| `SubnetCidr` | the highest free `/24` in the VPC (non-overlapping) |
+
+Set any of them explicitly in the env to override. The raw `aws cloudformation deploy` commands
+below are the manual equivalent.
+
 ### A) Into your existing Splunk VPC (so Splunk can reach it directly)
 
 The MCP server **always gets its own new subnet** (it never shares an existing one). For an
@@ -110,6 +135,22 @@ Swap the `WebSearch*` overrides for a keyless backend:
 
 Running SearXNG on the same box adds a Docker container — use `InstanceType=t3.medium` (or larger)
 rather than the `t3.small` default.
+
+## Cost (POC)
+
+Built to stay cheap:
+
+- **Bedrock KB → Amazon S3 Vectors**: serverless, pay-per-use, **no hourly/standing charge**. For
+  ~20 small docs, storage + queries are effectively pennies/month. (OpenSearch Serverless, the
+  alternative, has a ~US$350/mo idle-OCU floor — deliberately avoided.)
+- **Embedding/retrieval**: pay per token at ingest (one-time, tiny) and per query. Negligible at POC volume.
+- **KB logs**: `setup-bedrock-kb.sh` caps CloudWatch retention (14 days, `KB_LOG_RETENTION_DAYS`).
+- **MCP instance**: the only real line item — `t3.small` ≈ **US$15/mo** on-demand. Stop it when idle:
+  ```bash
+  aws ec2 stop-instances --instance-ids <McpInstanceId>   # start-instances to resume
+  ```
+  Or delete the whole stack (`aws cloudformation delete-stack --stack-name mcp-server`) — the KB,
+  its S3 Vectors store, and the docs are independent and stay put.
 
 ## After deploy
 
