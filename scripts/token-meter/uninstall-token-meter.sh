@@ -6,7 +6,7 @@ set -uo pipefail
 # By default this is a NON-destructive teardown of the proxy layer only: it stops and removes
 # the metering proxies + their self-heal timer and deletes the runtime state (token-meter.env
 # + destination file). It LEAVES both the staged code (scripts + the proxy app under
-# /opt/splunk-ai/token-meter-proxy) AND your Splunk token_metrics index, data, HEC token, and
+# /opt/splunk-ai/scripts/token-meter/token-meter-proxy) AND your Splunk token_metrics index, data, HEC token, and
 # dashboard — so a reinstall can reuse them. This is why a reinstall works right after an
 # uninstall: install-token-meter.sh does NOT re-stage app.py, so the app must survive.
 # Add --purge-splunk to also remove the Splunk-side objects; --remove-scripts to wipe the code.
@@ -21,7 +21,7 @@ set -uo pipefail
 #                      and the token_metrics dashboard app, then restart Splunk. Needs
 #                      SPLUNK_ADMIN_PASSWORD in the environment.
 #   --remove-scripts   Also delete the staged CODE: /opt/splunk-ai/scripts/token-meter,
-#                      11-token-metrics.sh, and the proxy app /opt/splunk-ai/token-meter-proxy.
+#                      11-token-metrics.sh, and the proxy app /opt/splunk-ai/scripts/token-meter/token-meter-proxy.
 #                      Off by default so a reinstall can reuse the staged files.
 #   --dry-run          Print what would be removed without changing anything.
 
@@ -112,11 +112,11 @@ if $REMOVE_SCRIPTS; then
   log "Removing staged code (scripts + proxy app)"
   rm_path "${INSTALL_ROOT}/scripts/token-meter"
   rm_path "${INSTALL_ROOT}/scripts/11-token-metrics.sh"
-  rm_path "${INSTALL_ROOT}/token-meter-proxy"
+  rm_path "${INSTALL_ROOT}/scripts/token-meter/token-meter-proxy"
   # Leave common.sh only if nothing else in scripts/ needs it; safest to keep it.
   warn "kept ${INSTALL_ROOT}/scripts/common.sh (may be shared by other scripts)"
 else
-  log "Kept staged code (${INSTALL_ROOT}/token-meter-proxy + scripts) so a reinstall can reuse it"
+  log "Kept staged code (${INSTALL_ROOT}/scripts/token-meter/token-meter-proxy + scripts) so a reinstall can reuse it"
 fi
 
 # ---------------------------------------------------------------------------

@@ -31,12 +31,13 @@ optional tag-based routing — see *Advanced*).
 | `scripts/11-token-metrics.sh` | **required** | Creates the `token_metrics` index (system-scope) + HEC token on Splunk, restarts until a probe is searchable, installs the **AI Token Usage** dashboard, writes `token-meter.env`, and kicks off the proxies. Also a platform bootstrap stage, so it stays in `scripts/`. |
 | `scripts/token-meter/install-token-meter.sh` | **required** (entrypoint) | The one command you run — discovers the model backends, calls `11`, starts the right proxies. |
 | `scripts/token-meter/start-token-meter-proxies.sh` | **required** | Launches the vLLM/Ollama metering proxies (systemd units) in front of the models. |
-| `token-meter-proxy/app.py` | **required** | The reverse proxy itself — reads token usage from each response and posts it to HEC. |
+| `scripts/token-meter/token-meter-proxy/app.py` | **required** | The reverse proxy itself — reads token usage from each response and posts it to HEC. Lives inside the `token-meter/` folder, so the copy step below grabs it automatically. |
 | `scripts/token-meter/configure-token-meter-routes.sh` | optional | Picks **which Splunk** the metrics ship to (this host vs. a remote/search-head), resolving a role to an IP. A standalone single-Splunk install doesn't need it. |
 | `scripts/token-meter/refresh-token-meter-routes.sh` | optional | Self-heal timer for that destination (re-resolves the peer IP). Only used with the script above. |
 | `scripts/token-meter/aws-helpers.sh` | optional | AWS-only IMDS + tag→IP lookup, used **solely** by the two scripts above. Inert off AWS. |
 | `scripts/token-meter/diagnose-token-metering.sh` | optional | Read-only troubleshooter (probes proxy → HEC → index). Handy if metrics don't show up. |
 | `scripts/token-meter/uninstall-token-meter.sh` | optional | Reverses the install — stops/removes the proxies + timer and staged files. `--purge-splunk` also drops the index/HEC/dashboard. |
+| `scripts/token-meter/simulate-search-heads.sh` | optional | Simulates N search heads sending AI commands through one GPU-host proxy (tags each with `X-Splunk-Origin`); see [Scenario: one proxy, many search heads](#scenario-one-proxy-on-the-gpu-host-many-search-heads). |
 
 **Bare minimum for a basic install:** `common.sh`, `11-token-metrics.sh`, `install-token-meter.sh`, `start-token-meter-proxies.sh`, `app.py`. The rest are optional (routing / diagnostics) — but the copy step below grabs the whole `token-meter/` folder, so you get them all with no downside.
 
@@ -92,13 +93,12 @@ ssh-keygen -R "$HOST" 2>/dev/null || true
 
 scp "${IDENT[@]}" $O scripts/common.sh scripts/11-token-metrics.sh "$USER@$HOST:/tmp/"
 scp "${IDENT[@]}" $O -r scripts/token-meter "$USER@$HOST:/tmp/token-meter"
-scp "${IDENT[@]}" $O token-meter-proxy/app.py "$USER@$HOST:/tmp/app.py"
 
 ssh "${IDENT[@]}" $O "$USER@$HOST" 'sudo bash -s' <<'EOF'
-mkdir -p /opt/splunk-ai/scripts/token-meter /opt/splunk-ai/token-meter-proxy
+mkdir -p /opt/splunk-ai/scripts/token-meter
 cp /tmp/common.sh /tmp/11-token-metrics.sh /opt/splunk-ai/scripts/
-cp /tmp/token-meter/*.sh /opt/splunk-ai/scripts/token-meter/
-cp /tmp/app.py /opt/splunk-ai/token-meter-proxy/app.py
+# The token-meter/ folder now contains token-meter-proxy/app.py, so copy it whole.
+cp -r /tmp/token-meter/. /opt/splunk-ai/scripts/token-meter/
 chmod +x /opt/splunk-ai/scripts/*.sh /opt/splunk-ai/scripts/token-meter/*.sh
 echo "placed:"; ls -1 /opt/splunk-ai/scripts /opt/splunk-ai/scripts/token-meter
 EOF
@@ -107,10 +107,9 @@ EOF
 > **Already on the host** (on-prem / bare metal, repo copied via git/rsync/USB)? Skip the SSH
 > and just place the files, then run Step 2 locally:
 > ```bash
-> sudo mkdir -p /opt/splunk-ai/scripts/token-meter /opt/splunk-ai/token-meter-proxy
+> sudo mkdir -p /opt/splunk-ai/scripts/token-meter
 > sudo cp scripts/common.sh scripts/11-token-metrics.sh /opt/splunk-ai/scripts/
-> sudo cp scripts/token-meter/*.sh /opt/splunk-ai/scripts/token-meter/
-> sudo cp token-meter-proxy/app.py /opt/splunk-ai/token-meter-proxy/app.py
+> sudo cp -r scripts/token-meter/. /opt/splunk-ai/scripts/token-meter/
 > sudo chmod +x /opt/splunk-ai/scripts/*.sh /opt/splunk-ai/scripts/token-meter/*.sh
 > ```
 
@@ -169,12 +168,20 @@ sudo bash /opt/splunk-ai/scripts/token-meter/install-token-meter.sh \
 
 ## Step 4 — verify
 
+First confirm the proxy is up. It runs as a **systemd unit**, not a container, so `docker ps`
+won't show it — check the unit instead:
 ```bash
-curl -s http://localhost:8101/api/chat \
+systemctl is-active token-meter-ollama          # -> "active"  (use token-meter-vllm for the vLLM proxy)
+```
+Then fire a real call through the proxy and confirm it was metered. Run this **on the proxy host**
+so `localhost` resolves to it; from anywhere else, use the proxy host's address:
+```bash
+curl -s http://<proxy-host>:8101/api/chat \
   -d '{"model":"<your-model>","messages":[{"role":"user","content":"hi"}],"stream":false}' >/dev/null
+#   <proxy-host> = localhost when you run this on the host the proxy runs on; otherwise its IP/DNS
 ```
 In Splunk: `index=token_metrics earliest=-15m`, or **Apps → AI Token Usage**.
-Fields: `backend, model, prompt_tokens, completion_tokens, total_tokens, latency_ms, user, app`.
+Fields: `backend, model, prompt_tokens, completion_tokens, total_tokens, latency_ms, user, app, origin`.
 
 ---
 
@@ -183,7 +190,7 @@ Fields: `backend, model, prompt_tokens, completion_tokens, total_tokens, latency
 `scripts/token-meter/uninstall-token-meter.sh` reverses the install. By default it's a
 **non-destructive** teardown of the proxy layer — it stops and removes the metering proxies
 + the self-heal timer and clears the runtime state (`token-meter.env` + destination file), but
-**leaves** the staged code (scripts + the proxy app under `/opt/splunk-ai/token-meter-proxy`)
+**leaves** the staged code (scripts + the proxy app under `/opt/splunk-ai/scripts/token-meter/token-meter-proxy`)
 and the Splunk `token_metrics` index, data, HEC token, and dashboard, so a reinstall reuses them.
 
 ```bash
@@ -242,6 +249,146 @@ The installer just orchestrates these:
   `TOKEN_METER_DEFAULT_HOST=<ip/host>`. Role→IP resolution uses the EC2 `SplunkAiRole` tag and
   is **AWS-only** — on-prem, set `TOKEN_METER_DEFAULT_HOST` explicitly. (For a same-host install
   you don't need this at all; the installer ships to the local HEC by default.)
+
+## How the proxy runs — systemd unit vs. container (why there's a Dockerfile)
+
+`token-meter-proxy/` contains both `app.py` **and** a `Dockerfile`. That's deliberate: the app is a
+single, dependency-free Python file, and `start-token-meter-proxies.sh` can run it **two ways**,
+preferring the first:
+
+1. **Host-python systemd unit (default).** If `app.py` is staged and `python3` exists on the host,
+   the script starts the proxy directly with `systemd-run` as unit `token-meter-ollama` /
+   `token-meter-vllm` (`Restart=always`). No image, no registry, no Docker daemon — so it works
+   identically in cloud and airgapped. **This is what a normal install uses**, which is why the
+   proxy shows up under `systemctl`, *not* `docker ps`.
+2. **Container (fallback).** If `app.py` is missing **or** `python3` isn't available, the script
+   falls back to running the image `TOKEN_METER_PROXY_IMAGE` (built from that `Dockerfile`,
+   `python:3.12-alpine`, non-root, stdlib-only so it stays tiny). It runs with `--network host`, so
+   it reaches localhost models exactly like the systemd unit.
+
+**So what is the Dockerfile actually for?**
+- **Portability / hand-off** — ship one immutable image to a box where you don't control the host
+  Python, or don't want to stage files.
+- **The registry fallback** — `deploy.sh` builds this image and pushes it to ECR when `SEED_ECR=true`;
+  the platform pulls it only if the host-python path isn't available.
+
+### Method A — systemd unit (default, recommended)
+Nothing special to do: `install-token-meter.sh` (or `start-token-meter-proxies.sh` directly) uses
+this whenever `app.py` is staged and `python3` exists. Manage it with `systemctl` /
+`journalctl -u token-meter-ollama`. This is the path the whole guide above assumes.
+
+### Method B — Docker container (fallback / portability)
+
+**Build the image** (context is the `token-meter-proxy/` folder). For a registry push, build a
+CLEAN single-arch image — disable BuildKit's provenance + SBOM attestations, otherwise the push
+becomes an OCI *image index* with an extra 0-byte manifest (a stray "Image Index" + untagged 0.00 MB
+entry that trips `docker pull` on some clients). Put the full ref in ONE variable — in zsh, `$VAR:tag`
+triggers the `:t` history modifier and mangles the name:
+```bash
+# local build
+docker build -t token-meter-proxy:latest scripts/token-meter/token-meter-proxy
+
+# build + push to ECR (what deploy.sh runs when SEED_ECR=true)
+IMAGE=<account>.dkr.ecr.<region>.amazonaws.com/<repo>:token-meter-proxy-latest
+docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+  -t "$IMAGE" --push scripts/token-meter/token-meter-proxy
+```
+
+**Run it directly** — one container per upstream, `--network host` so it reaches localhost models
+(see the [env-var reference](README.md#configuration-env-vars) for every setting):
+```bash
+# vLLM (OpenAI) — requires a Bearer key
+docker run -d --name token-meter-vllm --restart unless-stopped --network host \
+  -e UPSTREAM_URL=http://127.0.0.1:8001 -e BACKEND_LABEL=vllm -e LISTEN_PORT=8100 \
+  -e HEC_URL=https://<splunk>:8088/services/collector/event -e HEC_TOKEN=<hec-token> \
+  -e HEC_INDEX=token_metrics -e HEC_VERIFY_TLS=false -e PROXY_API_KEY=<key> \
+  token-meter-proxy:latest
+
+# Ollama (native API auto-detected) — keyless
+docker run -d --name token-meter-ollama --restart unless-stopped --network host \
+  -e UPSTREAM_URL=http://127.0.0.1:11434 -e BACKEND_LABEL=ollama -e LISTEN_PORT=8101 \
+  -e HEC_URL=https://<splunk>:8088/services/collector/event -e HEC_TOKEN=<hec-token> \
+  -e HEC_INDEX=token_metrics -e HEC_VERIFY_TLS=false \
+  token-meter-proxy:latest
+```
+
+**Or let the start script pick the container** — set a pullable image ref and hide the staged app so
+Method A can't win; you keep the script's HEC wiring but get a container:
+```bash
+sudo TOKEN_METER_PROXY_IMAGE=<account>.dkr.ecr.<region>.amazonaws.com/<repo>:token-meter-proxy-latest \
+     PROXY_APP=/nonexistent \
+     OLLAMA_UPSTREAM_URL=http://127.0.0.1:11434 VLLM_UPSTREAM_URL= \
+     HEC_URL="https://<splunk>:8088/services/collector/event" HEC_TOKEN="<token>" \
+     bash /opt/splunk-ai/scripts/token-meter/start-token-meter-proxies.sh
+# now it appears in `docker ps` as token-meter-ollama, not under systemctl
+```
+
+**Which to use?** For nearly every install, **Method A** — the container exists as the escape hatch,
+not the norm: with a stdlib-only app and the models on localhost, Method B adds a
+build/registry/daemon dependency and needs `--network host` anyway, so it brings overhead without any
+isolation benefit. Reach for Method B only when the host lacks a usable `python3`, or you need a
+pinned/immutable artifact for compliance/hand-off.
+
+## Scenario: one proxy on the GPU host, many search heads
+
+When several search heads issue AI commands against the **same** models (e.g. AITK/DSDL dispatches
+inference to the shared containers on the GPU host), deploy the proxy **once, on the GPU host**, and
+point every search head's model provider at it. The one proxy meters every call and ships all
+metrics to a single receiving search head's index.
+
+```
+   search head A ─┐
+   search head B ─┼─▶  token-meter proxy on the GPU host  ─▶  models (Ollama / vLLM)
+   search head C ─┘            └─ one metric per call ─▶  receiving SH HEC ─▶ index=token_metrics
+```
+
+**Start the proxy on the GPU host.** Use the same entrypoint as a normal install — just pointed at
+the remote receiving search head's HEC via `--metric-host`. This is the **one consistent way** to
+start the proxy; don't `docker run` the image by hand, so the systemd unit, restart policy, and HEC
+wiring stay identical to every other install:
+```bash
+sudo bash /opt/splunk-ai/scripts/token-meter/install-token-meter.sh \
+  --metric-host <receiving-search-head-PRIVATE-ip> --model-host localhost --hec-token '<that-SH-hec-token>'
+```
+> Use the receiving search head's **private** IP when both hosts share a VPC — the proxy reaches
+> its HEC on 8088 intra-VPC; the public IP's security group usually blocks 8088 (posts time out).
+> The receiving search head needs the `token_metrics` index + that HEC token first (run
+> `11-token-metrics.sh` there, or `install-token-meter.sh` on a copy that has a model).
+
+Already installed and only need to **(re)start** the proxy — e.g. after changing the destination?
+Call the canonical start script directly (it reads `/opt/splunk-ai/token-meter.env`; matching env
+vars override, and it runs the proxy the same way — host-python unit, container only as a fallback):
+```bash
+sudo HEC_URL=https://<receiving-search-head-PRIVATE-ip>:8088/services/collector/event \
+     HEC_TOKEN='<that-SH-hec-token>' HEC_INDEX=token_metrics \
+     OLLAMA_UPSTREAM_URL=http://127.0.0.1:11434 VLLM_UPSTREAM_URL='' \
+     bash /opt/splunk-ai/scripts/token-meter/start-token-meter-proxies.sh
+```
+
+Then point **each** search head's AITK/OpenAI/Ollama provider at the GPU proxy
+(`http://<gpu-host>:8101` for Ollama, `http://<gpu-host>:8100/v1` for vLLM).
+
+**Per-search-head attribution.** The proxy stamps every metric with an `origin` field — from the
+`X-Splunk-Origin` request header, else the calling host's IP — so the single index breaks down by
+search head:
+```
+index=token_metrics earliest=-1h | stats sum(total_tokens) as tokens count by origin, model
+```
+
+**Verify with a real call** — fire an actual model request through the proxy (this is metered, so it
+proves the whole path end-to-end); set `X-Splunk-Origin` to label the source search head:
+```bash
+curl -sk http://<gpu-host>:8101/api/chat \
+  -H 'Content-Type: application/json' -H 'X-Splunk-Origin: <search-head-ip>' \
+  -d '{"model":"granite-3.1-2b","messages":[{"role":"user","content":"hello"}],"stream":false}' >/dev/null
+# vLLM: POST http://<gpu-host>:8100/v1/chat/completions  with  -H "Authorization: Bearer <key>"
+```
+Then confirm it landed, broken down by origin:
+```
+index=token_metrics earliest=-15m | stats count sum(total_tokens) as tokens by origin
+```
+> Only generating load? `simulate-search-heads.sh` fires this same call as N synthetic search heads
+> — optional, for traffic generation only, not part of starting the proxy.
 
 ## Gotchas (handled by the installer, but worth knowing)
 

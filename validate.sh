@@ -15,7 +15,7 @@ note "1/6 shell syntax (bash -n)"
 for f in deploy.sh validate.sh $(find scripts -name '*.sh'); do bash -n "$f" || { echo "FAIL bash -n $f"; rc=1; }; done
 
 note "2/6 python compile"
-for f in $(find scripts -name '*.py') token-meter-proxy/app.py; do python3 -m py_compile "$f" || { echo "FAIL py_compile $f"; rc=1; }; done
+for f in $(find scripts -name '*.py'); do python3 -m py_compile "$f" || { echo "FAIL py_compile $f"; rc=1; }; done
 
 note "3/6 JSON validity"
 for f in config/*.json scripts/dsdl/dsdl-default-images.json; do jq empty "$f" || { echo "FAIL jq $f"; rc=1; }; done

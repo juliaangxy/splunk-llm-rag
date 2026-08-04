@@ -246,10 +246,10 @@ if [[ "${SEED_ECR}" == "true" ]]; then
   # disabled + a single --platform yields one plain manifest; --push uploads it directly.
   if docker buildx version >/dev/null 2>&1; then
     docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
-      -t "${PROXY_IMAGE}" --push "${PLATFORM_DIR}/token-meter-proxy"
+      -t "${PROXY_IMAGE}" --push "${PLATFORM_DIR}/scripts/token-meter/token-meter-proxy"
   else
     # No buildx: the legacy builder never emits an index/attestation (single amd64 manifest).
-    DOCKER_BUILDKIT=0 docker build --platform linux/amd64 -t "${PROXY_IMAGE}" "${PLATFORM_DIR}/token-meter-proxy"
+    DOCKER_BUILDKIT=0 docker build --platform linux/amd64 -t "${PROXY_IMAGE}" "${PLATFORM_DIR}/scripts/token-meter/token-meter-proxy"
     docker push "${PROXY_IMAGE}"
   fi
 
@@ -363,11 +363,11 @@ aws cloudformation package --region "${REGION}" \
   --output-template-file "${PACKAGED}"
 
 echo "== Uploading bootstrap scripts (+ token-meter proxy files) =="
-tar -C "${PLATFORM_DIR}" -czf "${SCRIPTS_ARCHIVE}" scripts token-meter-proxy
+tar -C "${PLATFORM_DIR}" -czf "${SCRIPTS_ARCHIVE}" scripts
 # Verify contents without piping tar into grep -q (grep's early exit can SIGPIPE tar
 # under `set -o pipefail`); read the listing once, then match via here-strings.
 _arch_list="$(tar -tzf "${SCRIPTS_ARCHIVE}")"
-for _need in scripts/bootstrap-gpu.sh scripts/bootstrap-searchhead.sh token-meter-proxy/app.py; do
+for _need in scripts/bootstrap-gpu.sh scripts/bootstrap-searchhead.sh scripts/token-meter/token-meter-proxy/app.py; do
   grep -qx "${_need}" <<<"${_arch_list}" || { echo "ERROR: bootstrap archive missing ${_need}" >&2; exit 1; }
 done
 aws s3 cp "${SCRIPTS_ARCHIVE}" "s3://${APPS_LICENSE_BUCKET}/${SCRIPTS_S3_KEY}" --region "${REGION}"

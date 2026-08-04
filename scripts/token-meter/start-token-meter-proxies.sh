@@ -58,7 +58,7 @@ HEC_ROUTES_FILE="${HEC_ROUTES_FILE:-/opt/splunk-ai/token-meter-routes.json}"
 # Source label recorded on each metric (AITK doesn't forward Splunk's user/app to the model).
 DEFAULT_APP="${DEFAULT_APP:-Splunk_ML_Toolkit}"
 
-PROXY_APP="${PROXY_APP:-/opt/splunk-ai/token-meter-proxy/app.py}"
+PROXY_APP="${PROXY_APP:-/opt/splunk-ai/scripts/token-meter/token-meter-proxy/app.py}"
 
 run_proxy() {
   local name="$1" listen="$2" upstream="$3" label="$4" api_key="${5:-}"
@@ -86,7 +86,7 @@ run_proxy() {
   # instead of a confusing "pull access denied".
   if [[ "${TOKEN_METER_PROXY_IMAGE}" != */* ]]; then
     error "Proxy app not found at ${PROXY_APP} (python3: $(command -v python3 || echo missing))."
-    error "Re-copy token-meter-proxy/app.py to ${PROXY_APP}, or set TOKEN_METER_PROXY_IMAGE to a pullable registry ref."
+    error "Re-copy scripts/token-meter/token-meter-proxy/app.py to ${PROXY_APP}, or set TOKEN_METER_PROXY_IMAGE to a pullable registry ref."
     return 1
   fi
   log "Host python/app unavailable; falling back to container image ${TOKEN_METER_PROXY_IMAGE}"

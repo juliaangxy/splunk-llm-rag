@@ -91,10 +91,10 @@ run_vllm() {
 # Make the proxy image available locally so it can be started manually later (no run).
 stage_token_meter_proxy() {
   if ! ensure_image "${TOKEN_METER_PROXY_IMAGE}"; then
-    warn "Could not pre-pull token-meter proxy image ${TOKEN_METER_PROXY_IMAGE}; it is staged as files under /opt/splunk-ai/token-meter-proxy"
+    warn "Could not pre-pull token-meter proxy image ${TOKEN_METER_PROXY_IMAGE}; it is staged as files under /opt/splunk-ai/scripts/token-meter/token-meter-proxy"
   fi
-  if [[ -d /opt/splunk-ai/token-meter-proxy ]]; then
-    log "token-meter proxy files staged at /opt/splunk-ai/token-meter-proxy"
+  if [[ -d /opt/splunk-ai/scripts/token-meter/token-meter-proxy ]]; then
+    log "token-meter proxy files staged at /opt/splunk-ai/scripts/token-meter/token-meter-proxy"
   fi
 }
 

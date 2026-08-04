@@ -141,7 +141,95 @@ eval "$(aws secretsmanager get-secret-value --region "$REGION" --secret-id "$PRE
   --query SecretString --output text | jq -r 'to_entries[] | "export \(.key)=\(.value|@sh)"')"
 ```
 
-## Custom vLLM model + token counting
+# Platform components
+
+Beyond the base two-instance deploy, the platform ships these components — each self-contained in
+its own folder, with a deeper README alongside the code.
+
+## MCP server — Bedrock KB + web search (`mcp/`)
+
+A remote **MCP (Model Context Protocol) server** on EC2 that Splunk Enterprise (or any MCP client)
+calls over the **Streamable HTTP** transport, guarded by an `Authorization: Bearer` token. It
+exposes two tools:
+
+| Tool | What it does |
+|---|---|
+| `bedrock_kb_retrieve(query, max_results)` | Retrieves passages from an **Amazon Bedrock Knowledge Base** |
+| `web_search(query, max_results)` | Runs a **web search** — open-source SearXNG/DuckDuckGo, or commercial Tavily/Brave |
+
+The [CloudFormation template](mcp/cloudformation/mcp-server.yaml) either **creates a VPC** or
+deploys into an **existing one** (e.g. the Splunk VPC) — always in its **own new subnet** — and
+optionally attaches an Elastic IP for internet reachability. The instance pulls the server code
+(from **S3** for a private repo, or `git clone` for a public one) and runs
+[`server/mcp_server.py`](mcp/server/mcp_server.py) as a `systemd` unit.
+[`deploy-mcp.sh`](mcp/deploy-mcp.sh) auto-discovers your VPC/IGW, a free subnet CIDR, and your
+Bedrock KB id, so a deploy is one command from an env file.
+
+Full setup — staging the code to S3, choosing a web-search backend, the env-file deploy wrapper,
+and wiring Splunk to the server — is in **[mcp/README.md](mcp/README.md)**.
+
+## DSDL / MLTK app containers (`scripts/dsdl/`)
+
+### Starting the DSDL containers (manual, by design)
+
+Deployment does **not** pull or start the three DSDL/MLTK workload containers
+(`gpu_container`, `llm_rag`, `cpu_container`) — auto-pulling those multi-GB images during
+cloud-init caused Docker problems. Instead the GPU host only *configures* them
+(`mltk-container/local/images.conf`, `containers.conf`) and sets up the ECR credential helper,
+so you start the container you need, when you need it, from the DSDL UI (Configuration →
+Containers) or a `... | fit MLTKContainer ... container_image="..."` search. Docker pulls the
+image from ECR (airgapped) or Docker Hub/ECR (cloud) on first use.
+
+This is controlled by the `AutoPullDsdlContainers` parameter (default `false` in both
+`config/cloud.json` and `config/airgapped.json`). Set it to `true` only if you want the old
+behavior of pulling those images during deployment.
+
+### Default DSDL images in the airgapped environment
+The airgapped instances cannot reach Docker Hub, so the **default Splunk DSDL images** must
+be seeded into ECR and DSDL/AITK told to pull them from there. This follows the DSDL
+[Container Customization](https://docs.splunk.com/Documentation/DSDL/5.2.2/User/ContainerCustomization)
+guidance ("push to a local registry … update `images.conf` to point to your internal registry
+references").
+
+- **`scripts/dsdl/dsdl-default-images.json`** — the single source of truth: the 10 default images
+  from `mltk-container/default/images.conf` (DSDL 5.2.4), each with its Docker Hub source and
+  the tag it gets inside the shared ECR repo.
+- **`scripts/dsdl/seed-default-dsdl-images.sh <region>`** — run on a connected operator machine
+  (Docker + internet): pulls each default image from Docker Hub and pushes it to ECR.
+  `deploy.sh airgapped …` runs this automatically.
+- **`scripts/dsdl/generate_default_images_conf.py`** — runs on each instance during
+  `09-configure-{gpu,searchhead}.sh` when `AIRGAPPED=true`: writes
+  `mltk-container/local/images.conf` (which overrides `default/`) with every default stanza's
+  `repo`/`image` repointed at ECR, keeping `title`/`runtime`. DSDL builds its pull reference as
+  `repo` + `image`, so a stanza becomes e.g.
+  `123….dkr.ecr.<region>.amazonaws.com/` + `<ecr-repo>:mltk-container-golden-gpu-5.2.4`.
+  The running `__dev__` container in `containers.conf` already uses the ECR image URIs that
+  `deploy.sh` computes, so both DSDL and the AI Toolkit start containers from ECR.
+
+To use a different DSDL version, edit `dsdl-default-images.json` and pass `DSDL_VERSION` to
+`deploy.sh`. To skip the arm64 image (it cannot run on the x86 instances) set `SKIP_ARM=true`.
+
+## Demo data generation (`scripts/datagen/`)
+
+Stands up demo/test data for the Splunk AI + RAG stack. The Splunk events and the Bedrock KB
+documents share `incident_id` values (`INC-2026-0101`…`0120`), so an analyst can pivot from a log
+line to its postmortem in the KB.
+
+| Tool | Does | How it runs |
+|---|---|---|
+| `populate-splunk-data.sh` | **One-shot** backfill of N minutes of history into `app`/`infra`/`security`, in a container that exits when done. | bootstrap stage (default on) |
+| `datagen-live.sh` | **Long-running** container emitting fresh data; sends to itself by default, can fan out to a list of nodes; pause/resume/stop. | **manual only** (never at boot) |
+| `setup-bedrock-kb.sh` | Creates a Bedrock Knowledge Base (S3 Vectors) over an S3 doc prefix and runs ingestion. | operator-run |
+
+Only **populate** runs at bootstrap — a stage on the search head and the GPU host, gated by the CFN
+`SplunkDataTargets` param (**default `search-head,gpu`**); a node acts only if its role is in the
+list. **`datagen-live.sh` is manual-only** and never auto-starts, so continuous data can't
+accumulate unbounded. Flags (`--duration`, `--end-offset-min`, `--target`, `--pause`/`--resume`/
+`--set-interval`/`--stop`), the shared engine, and the full architecture diagram are in
+**[scripts/datagen/README.md](scripts/datagen/README.md)**. The 20 source case notes live in
+[`kb-documents/`](kb-documents/).
+
+## AI models & token metering (`scripts/token-meter/`)
 
 Deployment brings up a small-but-capable **IBM Granite model on vLLM** (OpenAI-API-compatible)
 on the GPU host and wires Splunk to call it, with accurate token metering available on demand.
@@ -160,32 +248,11 @@ What deployment sets up automatically:
   airgapped loads it from S3 (`deploy.sh` pre-stages it) and the vLLM image from ECR.
 - **`token_metrics` index + HEC** on **each** instance's Splunk, plus an **"AI Token Usage"**
   dashboard in the `token_metrics` app (`scripts/11-token-metrics.sh`). By default all usage is
-  routed to the **search head's** index (see *Where usage is metered* below).
+  routed to the **search head's** index (see the [token-meter README](scripts/token-meter/README.md)).
 - **`mltk-container/local/llm.conf`** on **both** instances registering the OpenAI provider
   (vLLM Granite) and the Ollama provider — by default pointed **directly** at the models so they
   work out of the box (`scripts/configure-splunk-llm.sh`).
 - The **token-metering proxy image** is staged (pulled to the GPU host) but **not started**.
-
-### How token counting works
-> **Adding metering to a deployment that already runs Ollama/vLLM + Splunk (outside this
-> platform)?** See **[TOKEN-METERING-INSTALL.md](scripts/token-meter/TOKEN-METERING-INSTALL.md)** — a
-> standalone guide using `11-token-metrics.sh` + `start-token-meter-proxies.sh`.
-
-A tiny [token-meter proxy](token-meter-proxy/README.md) sits in front of a model server,
-reads the real `usage` the server returns (OpenAI `usage`, Ollama `prompt_eval_count`/
-`eval_count`; streaming handled), and ships one event per call to `index=token_metrics`.
-It is model-agnostic, so the same mechanism meters both the custom vLLM Granite model and the
-Ollama models. It is ~50 MB, stdlib-only, and bounded in memory — light enough to co-locate
-with the models (and portable enough to hand to someone else for their GPU/CPU box).
-
-### Turn on token counting (2 steps, on the GPU host)
-```bash
-# 1. Start the proxies (vLLM -> :8100, Ollama -> :8101), sending to token_metrics:
-sudo /opt/splunk-ai/scripts/token-meter/start-token-meter-proxies.sh
-# 2. Point Splunk at the proxies (run on BOTH instances), then reload DSDL:
-sudo /opt/splunk-ai/scripts/configure-splunk-llm.sh --mode proxy
-```
-To go back to calling models directly (no metering): `configure-splunk-llm.sh --mode direct`.
 
 ### Add the custom model in the AITK v6 UI (alternative to llm.conf)
 Print the exact values to paste into the AI Toolkit "add custom model" form
@@ -197,99 +264,31 @@ echo "API Key        : $PROXY_API_KEY"
 echo "Model          : granite-3.1-2b-instruct"
 ```
 
-### Track usage
-Search `index=token_metrics` (fields: `backend, model, prompt_tokens, completion_tokens,
-total_tokens, latency_ms, user, app`) or open **Apps → token_metrics → AI Token Usage**.
+### Token counting / metering
 
-Notes: vLLM is deployed by default (`DeployVllm=true` in the config JSONs); set it to `false`
-to skip. A portable copy of the proxy lives in `token-meter-proxy/` for reuse elsewhere.
+Every model call can be metered by a tiny reverse proxy that reads the backend's real `usage`
+and ships one event per call to `index=token_metrics`. The proxy image is staged on the GPU host
+but left **off** by default (`DeployVllm=true` deploys vLLM; set it `false` to skip). What it is,
+how it works, the dispatch architecture (why every call is metered on the GPU host), and where
+usage lands are in the folder's own docs:
 
-### Where usage is metered (architecture)
+- **[scripts/token-meter/README.md](scripts/token-meter/README.md)** — what the proxy does, the
+  metric fields, configuration, and the destination knob.
+- **[scripts/token-meter/TOKEN-METERING-INSTALL.md](scripts/token-meter/TOKEN-METERING-INSTALL.md)** —
+  how to install/run it (systemd unit vs. Docker container), including on a Splunk + Ollama/vLLM
+  stack **outside** this platform.
 
-AITK/DSDL does **not** call the model from the search head's `splunkd`. When you invoke a model
-from the AI Toolkit, Splunk **dispatches the job to the shared DSDL container on the GPU host**
-(`mltk-container/local/containers.conf` → `api_url = https://<gpu>:5001`), and that container
-makes the model call **from the GPU**. So every model call — no matter which instance's UI you
-started it from — is metered by the **GPU-host proxy**:
+# Utilities & operations
 
-```
-AITK UI (search head or GPU)
-   └─ dispatch job ─▶ DSDL container (GPU host)
-                        └─ model call ─▶ GPU proxy :8100/:8101 ─▶ vLLM/Ollama (GPU)
-                                            └─ metric (HEC POST) ─▶  chosen Splunk HEC
-```
-
-Two consequences worth knowing:
-- **You cannot attribute a call to "who started it."** AITK forwards no Splunk user/app/origin
-  into the model HTTP call, so container-dispatched calls all look identical at the proxy.
-- **The metric is decoupled from the model traffic.** The HEC event is a tiny POST that the proxy
-  can send to *any* Splunk instance, independent of where the model runs. That's the destination
-  knob below. By default the deploy points it at the **search head**, so all usage lands in one
-  index there — without hair-pinning the heavy model traffic.
-
-### Where token usage lands (destination)
-
-The destination is controlled by one CloudFormation param (set in `config/<env>.json`), applied
-automatically at deploy time — the bootstrap runs `configure-token-meter-routes.sh` before
-starting the proxies:
-
-| Param | Default | Meaning |
-|---|---|---|
-| `TokenMeterDefaultRole` | `search-head` | Which Splunk stores all usage: `search-head` \| `gpu-host` \| `self` (the instance that generated it). |
-
-The role is resolved to a private IP automatically via the instance's `SplunkAiRole` tag
-(`ec2:DescribeInstances`), so no IPs are hard-coded. The default `search-head` puts all usage
-(from both instances) in one index on the search head.
-
-> A `TokenMeterRoutesJson` param still exists in the templates for backward compatibility but is
-> **inert** — per-model/-source routing was removed because it couldn't be tested end-to-end.
-> Leave it `[]`.
-
-**Apply on a running instance (no redeploy):** the destination lives at
-`/opt/splunk-ai/token-meter-routes.json`; regenerate it and restart the proxies:
-
-```bash
-sudo TOKEN_METER_DEFAULT_ROLE=search-head \
-  /opt/splunk-ai/scripts/token-meter/configure-token-meter-routes.sh
-sudo /opt/splunk-ai/scripts/token-meter/start-token-meter-proxies.sh   # re-run; a plain systemctl restart won't reload env
-```
-
-**On-prem / no AWS tags:** set an explicit host instead of a role:
-
-```bash
-sudo TOKEN_METER_DEFAULT_HOST=10.0.1.9 \
-  /opt/splunk-ai/scripts/token-meter/configure-token-meter-routes.sh
-```
-
-**Token caveat:** shipping a metric to another instance's HEC requires the token that instance
-registered. This is automatic because `SPLUNK_HEC_TOKEN` is a per-environment **shared secret**
-(both instances fetch the same one and `11-token-metrics.sh` registers it on each). Only if you
-deliberately use per-instance tokens do you need to set a route's `hec_token` explicitly.
-
-## Starting the DSDL containers (manual, by design)
-
-Deployment does **not** pull or start the three DSDL/MLTK workload containers
-(`gpu_container`, `llm_rag`, `cpu_container`) — auto-pulling those multi-GB images during
-cloud-init caused Docker problems. Instead the GPU host only *configures* them
-(`mltk-container/local/images.conf`, `containers.conf`) and sets up the ECR credential helper,
-so you start the container you need, when you need it, from the DSDL UI (Configuration →
-Containers) or a `... | fit MLTKContainer ... container_image="..."` search. Docker pulls the
-image from ECR (airgapped) or Docker Hub/ECR (cloud) on first use.
-
-This is controlled by the `AutoPullDsdlContainers` parameter (default `false` in both
-`config/cloud.json` and `config/airgapped.json`). Set it to `true` only if you want the old
-behavior of pulling those images during deployment.
-
-## Verify
-- Splunk UI on `https://$GPU_EIP:8000` (GPU host) and `https://$SH_EIP:8000` (search head) from your allowed CIDR.
-- On the GPU host: `curl http://localhost:11434/api/tags` lists **both** models; Milvus on
-  `:19530`; `nvidia-smi` and `docker ps` healthy.
-- On the search head: `/opt/splunk/etc/apps/dsdl/local/docker.conf` points at the GPU host's
-  private IP; a DSDL run reaches the remote containers.
-- Airgapped: from an instance, `aws s3 ls` / ECR pulls succeed while `curl https://example.com`
-  **fails** (no internet egress). Use SSM Session Manager or SSH; read
-  `/var/log/splunk-ai-bootstrap.log`.
-- Scheduler: `aws scheduler get-schedule --name "$ENV-splunk-ai-friday-stop" --region "$REGION"`.
+## Local utilities (`utils/`)
+Helper scripts you run from a connected operator machine (not on the instances):
+- `get-dlami-ami-id.sh` / `get-al2023-ami-id.sh` — resolve the latest GPU DLAMI / Amazon Linux
+  2023 AMI per region (used by `deploy.sh`).
+- `push-docker-images-to-ecr.sh`, `build-and-push-dsdl-images-to-ecr.sh` — seed container images
+  into the shared ECR repo.
+- `upload-huggingface-ollama-model.sh`, `upload-huggingface-embedding-model.sh`,
+  `upload-milvus-compose-artifacts.sh` — stage models/artifacts into S3 (airgapped prep).
+- `validate-stack.sh`, `delete-stack.sh` — stack validation and teardown helpers.
 
 ## Upgrading the apps (AITK / DSDL / PSC)
 
@@ -347,6 +346,17 @@ connected operator machine **before** upgrading (same S3/ECR pathway as deploy):
 > `deploy.sh` for that environment, or `aws s3 cp` the updated `scripts/` tarball and
 > re-extract under `/opt/splunk-ai`.
 
+## Verify
+- Splunk UI on `https://$GPU_EIP:8000` (GPU host) and `https://$SH_EIP:8000` (search head) from your allowed CIDR.
+- On the GPU host: `curl http://localhost:11434/api/tags` lists **both** models; Milvus on
+  `:19530`; `nvidia-smi` and `docker ps` healthy.
+- On the search head: `/opt/splunk/etc/apps/dsdl/local/docker.conf` points at the GPU host's
+  private IP; a DSDL run reaches the remote containers.
+- Airgapped: from an instance, `aws s3 ls` / ECR pulls succeed while `curl https://example.com`
+  **fails** (no internet egress). Use SSM Session Manager or SSH; read
+  `/var/log/splunk-ai-bootstrap.log`.
+- Scheduler: `aws scheduler get-schedule --name "$ENV-splunk-ai-friday-stop" --region "$REGION"`.
+
 ## Cleanup
 (Uses `$REGION` / `$PREFIX` from *Operating commands — set these once*.)
 ```bash
@@ -360,37 +370,14 @@ aws cloudformation delete-stack --stack-name "$PREFIX-foundation-network" --regi
 The two S3 buckets and the ECR repository use `DeletionPolicy: Retain` — empty and delete
 them manually if you want them gone.
 
+# Appendix
+
 ## What this folder deliberately omits
 Relative to the original project, the token-counting stage (`11-*`), its webhook/example/docs,
 the duplicate `outputs.yaml`, and the `AITK-*`/`TOKEN-COUNTING-*`/`DEPLOYMENT-CHECKLIST`
 files are **not** carried over, to keep this a lean rebuild. They remain in the original tree.
 
-### Default DSDL images in the airgapped environment
-The airgapped instances cannot reach Docker Hub, so the **default Splunk DSDL images** must
-be seeded into ECR and DSDL/AITK told to pull them from there. This follows the DSDL
-[Container Customization](https://docs.splunk.com/Documentation/DSDL/5.2.2/User/ContainerCustomization)
-guidance ("push to a local registry … update `images.conf` to point to your internal registry
-references").
-
-- **`scripts/dsdl/dsdl-default-images.json`** — the single source of truth: the 10 default images
-  from `mltk-container/default/images.conf` (DSDL 5.2.4), each with its Docker Hub source and
-  the tag it gets inside the shared ECR repo.
-- **`scripts/dsdl/seed-default-dsdl-images.sh <region>`** — run on a connected operator machine
-  (Docker + internet): pulls each default image from Docker Hub and pushes it to ECR.
-  `deploy.sh airgapped …` runs this automatically.
-- **`scripts/dsdl/generate_default_images_conf.py`** — runs on each instance during
-  `09-configure-{gpu,searchhead}.sh` when `AIRGAPPED=true`: writes
-  `mltk-container/local/images.conf` (which overrides `default/`) with every default stanza's
-  `repo`/`image` repointed at ECR, keeping `title`/`runtime`. DSDL builds its pull reference as
-  `repo` + `image`, so a stanza becomes e.g.
-  `123….dkr.ecr.<region>.amazonaws.com/` + `<ecr-repo>:mltk-container-golden-gpu-5.2.4`.
-  The running `__dev__` container in `containers.conf` already uses the ECR image URIs that
-  `deploy.sh` computes, so both DSDL and the AI Toolkit start containers from ECR.
-
-To use a different DSDL version, edit `dsdl-default-images.json` and pass `DSDL_VERSION` to
-`deploy.sh`. To skip the arm64 image (it cannot run on the x86 instances) set `SKIP_ARM=true`.
-
-### Airgap caveats
+## Airgap caveats
 `dnf` works airgapped (Amazon Linux 2023 repos are S3-backed). The NVIDIA container-toolkit
 repo and the manual Docker-Compose GitHub download are **not** reachable airgapped — the
 NVIDIA DLAMI ships both, and the bootstrap scripts detect `AIRGAPPED=true` and refuse the

@@ -62,6 +62,10 @@ MAX_CAPTURE_BYTES = int(os.environ.get("MAX_CAPTURE_BYTES", str(256 * 1024)))
 # static labels so events are still attributable to the source.
 DEFAULT_APP = os.environ.get("DEFAULT_APP", "").strip()
 DEFAULT_USER = os.environ.get("DEFAULT_USER", "").strip()
+# Identifies the calling search head when ONE proxy (e.g. on the GPU host) meters traffic from
+# several. Prefer the X-Splunk-Origin header; else this env; else the client's IP (each search
+# head connects to the proxy directly, so its address distinguishes it).
+DEFAULT_ORIGIN = os.environ.get("DEFAULT_ORIGIN", "").strip()
 
 if not UPSTREAM_URL:
     print("FATAL: UPSTREAM_URL is required", file=sys.stderr)
@@ -313,6 +317,8 @@ class Handler(BaseHTTPRequestHandler):
         user = (self.headers.get("X-Splunk-User") or self.headers.get("X-User")
                 or req_user or DEFAULT_USER or "")
         app = self.headers.get("X-Splunk-App") or DEFAULT_APP or ""
+        origin = (self.headers.get("X-Splunk-Origin") or DEFAULT_ORIGIN
+                  or (self.client_address[0] if getattr(self, "client_address", None) else ""))
         event = {
             "ts": time.time(),
             "backend": BACKEND_LABEL,
@@ -325,6 +331,7 @@ class Handler(BaseHTTPRequestHandler):
             "status": status,
             "user": user,
             "app": app,
+            "origin": origin,
         }
         threading.Thread(target=send_to_hec, args=(event,), daemon=True).start()
 

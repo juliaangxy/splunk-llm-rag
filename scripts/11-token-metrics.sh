@@ -21,7 +21,7 @@ OLLAMA_PORT="${OLLAMA_PORT:-11434}"
 OLLAMA_PROXY_PORT="${OLLAMA_PROXY_PORT:-8101}"
 APP_DIR="${SPLUNK_HOME}/etc/apps/token_metrics/local"
 METER_ENV_FILE="${METER_ENV_FILE:-/opt/splunk-ai/token-meter.env}"
-PROXY_APP="${PROXY_APP:-/opt/splunk-ai/token-meter-proxy/app.py}"
+PROXY_APP="${PROXY_APP:-/opt/splunk-ai/scripts/token-meter/token-meter-proxy/app.py}"
 DEFAULT_APP="${DEFAULT_APP:-Splunk_ML_Toolkit}"
 MGMT="https://127.0.0.1:8089"
 
