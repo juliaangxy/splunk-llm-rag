@@ -47,3 +47,4 @@ __pycache__/
 
 # ===== Misc local docs =====
 LLM setup.pdf
+mcp/mcp.env

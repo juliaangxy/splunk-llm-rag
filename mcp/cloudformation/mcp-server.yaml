@@ -48,6 +48,10 @@ Parameters:
     Default: 'false'
     AllowedValues: ['true', 'false']
     Description: If true, open the MCP port to 0.0.0.0/0 and attach an Elastic IP.
+  SshCidr:
+    Type: String
+    Default: ''
+    Description: CIDR allowed to SSH (port 22), e.g. your <ip>/32. Empty = no SSH. Needs KeyName + AllowInternetAccess or a reachable route.
   McpPort:
     Type: Number
     Default: 8000
@@ -120,6 +124,7 @@ Conditions:
   CreateVpc: !Equals [!Ref ExistingVpcId, '']
   UseExistingVpc: !Not [!Equals [!Ref ExistingVpcId, '']]
   HasSplunkCidr: !Not [!Equals [!Ref SplunkCidr, '']]
+  HasSshCidr: !Not [!Equals [!Ref SshCidr, '']]
   EnableInternet: !Equals [!Ref AllowInternetAccess, 'true']
   HasKeyName: !Not [!Equals [!Ref KeyName, '']]
   HasSearchKey: !Not [!Equals [!Ref WebSearchApiKey, '']]
@@ -217,7 +222,7 @@ Resources:
       FromPort: !Ref McpPort
       ToPort: !Ref McpPort
       CidrIp: !Ref SplunkCidr
-      Description: Splunk subnet -> MCP
+      Description: Splunk subnet to MCP
 
   IngressFromInternet:
     Type: AWS::EC2::SecurityGroupIngress
@@ -228,7 +233,18 @@ Resources:
       FromPort: !Ref McpPort
       ToPort: !Ref McpPort
       CidrIp: 0.0.0.0/0
-      Description: Internet -> MCP (guarded by bearer token)
+      Description: Internet to MCP (guarded by bearer token)
+
+  IngressFromSsh:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasSshCidr
+    Properties:
+      GroupId: !Ref McpSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: !Ref SshCidr
+      Description: SSH from operator IP
 
   # ---- Secrets -------------------------------------------------------------------------
   AuthTokenSecret:
@@ -317,10 +333,11 @@ Resources:
               n=$((n + 1)); sleep 5
             done
 
-            dnf install -y python3 python3-pip git openssl
+            # fastmcp needs Python >=3.10; AL2023's default python3 is 3.9, so use python3.11.
+            dnf install -y python3.11 python3.11-pip git openssl
 
             install -d /opt/mcp/src/mcp/server
-            python3 -m venv /opt/mcp/venv
+            python3.11 -m venv /opt/mcp/venv
             /opt/mcp/venv/bin/pip install --upgrade pip
             # Fetch the server code. Prefer S3 (works for PRIVATE repos, via the instance role);
             # fall back to git clone only when no CodeS3Bucket is given (public repos).
