@@ -152,13 +152,29 @@ install_app_from_file() {
 	fi
 }
 
+# Reorder app keys so cloud-connect installs BEFORE the AI Toolkit (AITK depends on it).
+# Rank: cloud-connect=0 (first), ai-toolkit=9 (last), everything else=5. Stable sort keeps the
+# original relative order within a rank (so version ordering from the S3 listing is preserved).
+order_app_keys() {
+	local key rank
+	while IFS= read -r key; do
+		[[ -n "${key}" ]] || continue
+		case "${key}" in
+			*cloud-connect*|*Cloud-Connect*)                 rank=0 ;;
+			*splunk-ai-toolkit*|*Splunk_ML_Toolkit*)         rank=9 ;;
+			*)                                               rank=5 ;;
+		esac
+		printf '%d\t%s\n' "${rank}" "${key}"
+	done | sort -s -k1,1n | cut -f2-
+}
+
 install_apps_from_s3() {
 	local app_index=0
 	local installed_count=0
 	local s3_key
 	local app_keys=()
 
-	if ! mapfile -t app_keys < <(collect_s3_app_keys); then
+	if ! mapfile -t app_keys < <(collect_s3_app_keys | order_app_keys); then
 		return 1
 	fi
 
