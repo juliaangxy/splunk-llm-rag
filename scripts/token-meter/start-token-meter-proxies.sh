@@ -57,6 +57,11 @@ HEC_ROUTES_FILE="${HEC_ROUTES_FILE:-/opt/splunk-ai/token-meter-routes.json}"
 [[ -n "${HEC_ROUTES_FILE}" ]] && log "Using HEC destination file ${HEC_ROUTES_FILE}"
 # Source label recorded on each metric (AITK doesn't forward Splunk's user/app to the model).
 DEFAULT_APP="${DEFAULT_APP:-Splunk_ML_Toolkit}"
+# Optional content logging (OFF by default). Set LOG_PROMPT/LOG_COMPLETION=true to also record the
+# prompt/response TEXT in each metric — see the privacy/volume warning in the README.
+LOG_PROMPT="${LOG_PROMPT:-false}"
+LOG_COMPLETION="${LOG_COMPLETION:-false}"
+MAX_CONTENT_CHARS="${MAX_CONTENT_CHARS:-2000}"
 
 PROXY_APP="${PROXY_APP:-/opt/splunk-ai/scripts/token-meter/token-meter-proxy/app.py}"
 
@@ -74,6 +79,7 @@ run_proxy() {
       --setenv=HEC_URL="${HEC_URL}" --setenv=HEC_TOKEN="${HEC_TOKEN}" --setenv=HEC_INDEX="${HEC_INDEX}" \
       --setenv=HEC_ROUTES_FILE="${HEC_ROUTES_FILE}" \
       --setenv=HEC_VERIFY_TLS="false" --setenv=PROXY_API_KEY="${api_key}" --setenv=DEFAULT_APP="${DEFAULT_APP}" \
+      --setenv=LOG_PROMPT="${LOG_PROMPT}" --setenv=LOG_COMPLETION="${LOG_COMPLETION}" --setenv=MAX_CONTENT_CHARS="${MAX_CONTENT_CHARS}" \
       python3 "${PROXY_APP}"
     wait_for_port 127.0.0.1 "${listen}" 60
     return 0
@@ -105,6 +111,7 @@ run_proxy() {
     -e "HEC_URL=${HEC_URL}" -e "HEC_TOKEN=${HEC_TOKEN}" -e "HEC_INDEX=${HEC_INDEX}" \
     "${routes_env[@]}" "${routes_mount[@]}" \
     -e "HEC_VERIFY_TLS=false" -e "PROXY_API_KEY=${api_key}" -e "DEFAULT_APP=${DEFAULT_APP}" \
+    -e "LOG_PROMPT=${LOG_PROMPT}" -e "LOG_COMPLETION=${LOG_COMPLETION}" -e "MAX_CONTENT_CHARS=${MAX_CONTENT_CHARS}" \
     "${TOKEN_METER_PROXY_IMAGE}" >/dev/null
   wait_for_port 127.0.0.1 "${listen}" 120
 }

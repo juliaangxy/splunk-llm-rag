@@ -64,6 +64,8 @@ user, app, origin`
 - `user` / `app` come from `X-Splunk-User` / `X-Splunk-App` request headers when the caller sends them.
 - `origin` comes from `X-Splunk-Origin` (else `DEFAULT_ORIGIN`, else the client IP) — used to
   attribute calls when many search heads share one proxy.
+- `prompt` / `response` are added **only** when `LOG_PROMPT` / `LOG_COMPLETION` are enabled (off by
+  default — see the Configuration warning).
 
 View them with `index=token_metrics earliest=-15m` or **Apps → token_metrics → AI Token Usage**.
 
@@ -85,6 +87,15 @@ unit or a container:
 | `PROXY_API_KEY` | – | If set, inbound requests must send `Authorization: Bearer <key>` |
 | `DEFAULT_ORIGIN` | – | Fallback `origin` when no `X-Splunk-Origin` header is sent |
 | `REQUEST_TIMEOUT` | `600` | Upstream timeout (seconds) |
+| `LOG_PROMPT` | `false` | Also record the request **prompt** text in each event (see warning below) |
+| `LOG_COMPLETION` | `false` | Also record the **response** text in each event (see warning below) |
+| `MAX_CONTENT_CHARS` | `2000` | Truncate logged prompt/response to this many characters |
+
+> ⚠️ **Content logging is off by default.** `LOG_PROMPT`/`LOG_COMPLETION` add `prompt` / `response`
+> fields containing the **actual text**, which may hold PII/secrets and is far larger than a
+> counts-only metric (license + storage cost). Turn them on only for an index whose access you
+> control. For streamed responses over `MAX_CAPTURE_BYTES` (256 KiB) only the tail is buffered, so
+> a very long logged response can be partial.
 
 ## Where token usage lands (destination)
 

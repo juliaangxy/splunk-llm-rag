@@ -26,6 +26,12 @@ Configuration (environment variables):
   HEC_VERIFY_TLS   "true" to verify HEC TLS (default "false"; Splunk HEC is usually self-signed)
   PROXY_API_KEY    If set, require this bearer token on inbound requests (else pass through)
   REQUEST_TIMEOUT  Upstream timeout seconds (default 600)
+  LOG_PROMPT       "true" to also record the request prompt text (default false)
+  LOG_COMPLETION   "true" to also record the response text (default false)
+  MAX_CONTENT_CHARS  Truncate logged prompt/response to this many chars (default 2000)
+
+  WARNING: LOG_PROMPT/LOG_COMPLETION store the actual prompt/response CONTENT in the index,
+  which may contain PII/secrets and is far larger than a counts-only metric. Off by default.
 """
 
 import json
@@ -66,6 +72,13 @@ DEFAULT_USER = os.environ.get("DEFAULT_USER", "").strip()
 # several. Prefer the X-Splunk-Origin header; else this env; else the client's IP (each search
 # head connects to the proxy directly, so its address distinguishes it).
 DEFAULT_ORIGIN = os.environ.get("DEFAULT_ORIGIN", "").strip()
+# Optional CONTENT capture. OFF by default: prompts/responses can carry PII/secrets/proprietary
+# text, and full text is far larger than a counts-only metric (license + storage cost). When on,
+# each is truncated to MAX_CONTENT_CHARS. Note: for streamed responses over MAX_CAPTURE_BYTES only
+# the tail is buffered, so a very long logged response may be partial.
+LOG_PROMPT = os.environ.get("LOG_PROMPT", "false").lower() == "true"
+LOG_COMPLETION = os.environ.get("LOG_COMPLETION", "false").lower() == "true"
+MAX_CONTENT_CHARS = int(os.environ.get("MAX_CONTENT_CHARS", "2000"))
 
 if not UPSTREAM_URL:
     print("FATAL: UPSTREAM_URL is required", file=sys.stderr)
@@ -184,6 +197,73 @@ def parse_streaming_usage(raw_bytes):
     return found
 
 
+def _truncate(s):
+    if s and len(s) > MAX_CONTENT_CHARS:
+        return s[:MAX_CONTENT_CHARS] + "…[truncated]"
+    return s or ""
+
+
+def extract_prompt(obj):
+    """Best-effort prompt text from an OpenAI/Ollama request body."""
+    if not isinstance(obj, dict):
+        return ""
+    msgs = obj.get("messages")
+    if isinstance(msgs, list):  # chat: /v1/chat/completions, /api/chat
+        parts = []
+        for m in msgs:
+            if not isinstance(m, dict):
+                continue
+            content = m.get("content", "")
+            if isinstance(content, list):  # OpenAI multimodal content parts
+                content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+            parts.append(f"{m.get('role', '')}: {content}".strip())
+        return "\n".join(parts)
+    p = obj.get("prompt") or obj.get("input") or ""  # completions / ollama generate
+    return p if isinstance(p, str) else json.dumps(p)
+
+
+def _completion_chunk(o):
+    """Text from one response object (streamed delta or full message), OpenAI or Ollama."""
+    ch = o.get("choices")
+    if isinstance(ch, list) and ch:
+        first = ch[0] or {}
+        delta = first.get("delta") or {}
+        if delta.get("content"):
+            return delta["content"]
+        msg = first.get("message") or {}
+        if msg.get("content"):
+            return msg["content"]
+        if first.get("text"):
+            return first["text"]
+    msg = o.get("message")  # ollama /api/chat
+    if isinstance(msg, dict) and msg.get("content"):
+        return msg["content"]
+    if isinstance(o.get("response"), str):  # ollama /api/generate
+        return o["response"]
+    return ""
+
+
+def extract_completion(raw, ctype, is_stream):
+    """Best-effort response text: concatenate streamed deltas, or read the full body."""
+    if "text/event-stream" in ctype or is_stream:
+        out = []
+        for line in raw.split(b"\n"):
+            line = line.strip()
+            if line.startswith(b"data:"):
+                line = line[5:].strip()
+            if not line or line == b"[DONE]":
+                continue
+            try:
+                out.append(_completion_chunk(json.loads(line.decode("utf-8"))))
+            except Exception:  # noqa: BLE001
+                continue
+        return "".join(out)
+    try:
+        return _completion_chunk(json.loads(raw))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -222,6 +302,7 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_body()
         model = ""
         req_user = ""
+        req_prompt = ""
         is_stream = False
         # Inject include_usage for OpenAI-style streaming so we get accurate counts.
         if body:
@@ -230,6 +311,8 @@ class Handler(BaseHTTPRequestHandler):
                 model = str(obj.get("model", "") or "")
                 req_user = str(obj.get("user", "") or "")
                 is_stream = bool(obj.get("stream", False))
+                if LOG_PROMPT:
+                    req_prompt = extract_prompt(obj)
                 if is_stream and self.path.startswith("/v1/"):
                     so = obj.get("stream_options") or {}
                     so["include_usage"] = True
@@ -300,9 +383,9 @@ class Handler(BaseHTTPRequestHandler):
             upstream.close()
 
         latency_ms = int((time.time() - started) * 1000)
-        self._record(bytes(captured), ctype, model, is_stream, latency_ms, status, req_user)
+        self._record(bytes(captured), ctype, model, is_stream, latency_ms, status, req_user, req_prompt)
 
-    def _record(self, raw, ctype, model, is_stream, latency_ms, status, req_user=""):
+    def _record(self, raw, ctype, model, is_stream, latency_ms, status, req_user="", req_prompt=""):
         usage = None
         if "text/event-stream" in ctype or is_stream:
             usage = parse_streaming_usage(raw)
@@ -333,6 +416,12 @@ class Handler(BaseHTTPRequestHandler):
             "app": app,
             "origin": origin,
         }
+        if LOG_PROMPT and req_prompt:
+            event["prompt"] = _truncate(req_prompt)
+        if LOG_COMPLETION:
+            completion_text = extract_completion(raw, ctype, is_stream)
+            if completion_text:
+                event["response"] = _truncate(completion_text)
         threading.Thread(target=send_to_hec, args=(event,), daemon=True).start()
 
 
