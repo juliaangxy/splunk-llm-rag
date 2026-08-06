@@ -163,8 +163,8 @@ Drop new app packages into `apps/`, then:
 
 ```bash
 # 1) stage local apps -> S3 (dry-run first to preview the sync)
-LICENSE_BUCKET=ai-splunk-license-bucket ./scripts/upgrade-apps.sh --dry-run
-LICENSE_BUCKET=ai-splunk-license-bucket ./scripts/upgrade-apps.sh
+LICENSE_BUCKET=<your-apps-license-bucket> ./scripts/upgrade-apps.sh --dry-run
+LICENSE_BUCKET=<your-apps-license-bucket> ./scripts/upgrade-apps.sh
 
 # 2) install on every instance via SSM — discovered by tag, no IP/SSH/key needed
 REGION=ap-southeast-1
@@ -294,7 +294,7 @@ is gated). To use a different model, set `VllmModel`/`VllmModelName` in the conf
 `HF_TOKEN` is only needed if you deliberately choose a gated repo.
 
 What deployment sets up automatically:
-- **vLLM** serving `ibm-granite/granite-3.1-2b-instruct` (served name `granite-3.1-2b-instruct`)
+- **** serving `ibm-granite/granite-3.1-2b-instruct` (served name `granite-3.1-2b-instruct`)
   on `:8001` (`scripts/12-vllm.sh`). Cloud pulls the model from Hugging Face (no token needed);
   airgapped loads it from S3 (`deploy.sh` pre-stages it) and the vLLM image from ECR.
 - **`token_metrics` index + HEC** on **each** instance's Splunk, plus an **"AI Token Usage"**

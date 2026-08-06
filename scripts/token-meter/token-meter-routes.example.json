@@ -1,0 +1,8 @@
+{
+  "_comment": "OPTIONAL destination override for the token-meter proxy. Copy to /opt/splunk-ai/token-meter-routes.json to make the proxy ship metrics to a DIFFERENT Splunk than token-meter.env's HEC_URL (e.g. the GPU-host proxy shipping to the search head). When this file is present it WINS over HEC_URL/HEC_TOKEN/HEC_INDEX in token-meter.env; when absent, the proxy uses token-meter.env. Normally you don't hand-write this — configure-token-meter-routes.sh generates it from a role (search-head | gpu-host | self) and installs a self-heal timer. The proxy hot-reloads it on change and ignores unknown keys like this _comment.",
+  "default": {
+    "hec_url": "https://RECEIVING-SPLUNK-PRIVATE-IP:8088/services/collector/event",
+    "hec_token": "REPLACE-WITH-THE-RECEIVING-SPLUNK-HEC-TOKEN",
+    "hec_index": "token_metrics"
+  }
+}

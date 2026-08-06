@@ -112,6 +112,26 @@ The role is resolved to a private IP automatically via the instance's `SplunkAiR
 (`ec2:DescribeInstances`), so no IPs are hard-coded. The default `search-head` puts all usage (from
 both instances) in one index on the search head.
 
+### Which file controls the destination — `token-meter.env` vs the routes file
+
+Two files on the proxy host can influence metering, but only **one decides where metrics ship**:
+
+| File | Written by | Holds | For the destination |
+|---|---|---|---|
+| `/opt/splunk-ai/token-meter.env` | `11-token-metrics.sh` | Base config: `HEC_TOKEN`, `HEC_INDEX`, `PROXY_API_KEY`, upstream URLs, and a default `HEC_URL`. Always read. | **Fallback** — used when there is no routes file. |
+| `/opt/splunk-ai/token-meter-routes.json` | `configure-token-meter-routes.sh` | **Optional** override: `{hec_url, hec_token, hec_index}`. Hot-reloaded; kept fresh by the self-heal timer. | **Winner** — used whenever the file exists. |
+
+So only one destination applies at a time:
+
+- **Same-host metering** (proxy → its own Splunk): just `token-meter.env` (its `HEC_URL` points at localhost). **No routes file needed.**
+- **Cross-host metering** (e.g. the GPU-host proxy → the search head): the **routes file** provides the destination and overrides `token-meter.env`'s `HEC_URL`. `token-meter.env` still supplies the token, index, and API key.
+
+The proxy uses the routes file only when `HEC_ROUTES_FILE` points at an existing file (default
+`/opt/splunk-ai/token-meter-routes.json`); a missing or unreadable file silently falls back to
+`token-meter.env`, so a bad file never stops metrics flowing. See
+**[`token-meter-routes.example.json`](token-meter-routes.example.json)** for the schema — though you
+normally **generate** it with `configure-token-meter-routes.sh` (role → IP) rather than hand-writing it.
+
 **Token caveat:** shipping a metric to another instance's HEC requires the token that instance
 registered. This is automatic because `SPLUNK_HEC_TOKEN` is a per-environment **shared secret**
 (both instances fetch the same one and `11-token-metrics.sh` registers it on each). Only if you
