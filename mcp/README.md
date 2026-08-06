@@ -177,6 +177,13 @@ URL:     https://<ip>:8000/mcp
 Header:  Authorization: Bearer <token from Secrets Manager>
 ```
 
+> **Splunk AITK compatibility (both on by default — leave them on).** AITK's MCP client needs the
+> server in **stateless** mode *and* returning **JSON** (not SSE). The server defaults to
+> `MCP_STATELESS=true` and `MCP_JSON_RESPONSE=true` for exactly this. Without stateless you get
+> `400 Bad Request: Missing session ID` (AITK doesn't resend the `mcp-session-id`); without JSON
+> responses AITK connects (HTTP 200) but fails with `response parsing failed: Expecting value:
+> line 1 column 1` (it can't `json.loads` an SSE stream). See the two troubleshooting entries below.
+
 Quick check with curl (initialize handshake):
 
 ```bash
@@ -187,6 +194,40 @@ curl -sk https://<ip>:8000/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}'
 # health (no auth): curl -sk https://<ip>:8000/health
 ```
+
+> **Note on that curl:** with the default stateful transport it wouldn't be enough on its own — you'd
+> have to capture the `mcp-session-id` from the `initialize` response and resend it on every
+> follow-up. The server now defaults to **stateless** mode (below), so clients don't need to.
+
+### Client gets `HTTP 400 Bad Request: Missing session ID`
+
+Some MCP clients — notably **Splunk AITK** — don't resend the `mcp-session-id` header on follow-up
+requests. A **stateful** MCP server rejects those with `400 Bad Request: Missing session ID` (the
+`initialize` succeeds, then every later call 400s). The server runs in **stateless HTTP** mode by
+default (`MCP_STATELESS=true`) to avoid this — no session id is required, each request is
+self-contained. Set `MCP_STATELESS=false` only for a client that actively manages sessions.
+
+If you see the 400 after a redeploy, confirm the running code has it:
+```bash
+# on the instance (SSM Session Manager):
+grep -E 'stateless_http|json_response' /opt/mcp/src/mcp/server/mcp_server.py
+sudo systemctl restart mcp-server.service
+```
+
+### Client connects (HTTP 200) but reports `response parsing failed: Expecting value: line 1 column 1`
+
+The client got a **200** but couldn't parse the body: it `json.loads()`-ed an **SSE** stream
+(`content-type: text/event-stream`, body `event: message\ndata: {…}`). Splunk AITK expects plain
+JSON. The server defaults to **`MCP_JSON_RESPONSE=true`**, which replies with `application/json`
+instead of SSE. Verify:
+```bash
+curl -sk -D - https://<ip>:8000/mcp -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"c","version":"1"}}}' \
+  | grep -iE 'content-type|jsonrpc'
+# want: content-type: application/json   and a body starting with {"jsonrpc"...
+```
+Set `MCP_JSON_RESPONSE=false` only for a client that specifically wants the SSE stream.
 
 ## Reachability
 

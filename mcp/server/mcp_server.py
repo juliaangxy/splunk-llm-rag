@@ -16,6 +16,10 @@ Env:
   MCP_HOST                 bind address (default 0.0.0.0)
   MCP_PORT                 listen port (default 8000)
   MCP_PATH                 HTTP path for the MCP endpoint (default /mcp)
+  MCP_STATELESS            "true" (default) = no mcp-session-id required, for clients like Splunk
+                           AITK that don't resend it; "false" = stateful (session id required)
+  MCP_JSON_RESPONSE        "true" (default) = reply with application/json; "false" = SSE stream.
+                           AITK json.loads the body, so SSE breaks it ("Expecting value: line 1 …")
   MCP_TLS_CERT/MCP_TLS_KEY paths to a TLS cert+key; if set, the server serves HTTPS
   AUTH_TOKEN               bearer token clients must present (or AUTH_TOKEN_SECRET_ARN)
   BEDROCK_KB_ID            Bedrock Knowledge Base id the retrieve tool queries
@@ -53,6 +57,13 @@ KB_ID = os.environ.get("BEDROCK_KB_ID", "").strip()
 SEARCH_PROVIDER = os.environ.get("SEARCH_PROVIDER", "tavily").strip().lower()
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "").strip()  # for the open-source 'searxng' provider
 MCP_PATH = os.environ.get("MCP_PATH", "/mcp")
+# Stateless HTTP: don't hand out / require an mcp-session-id. Default true for broad client
+# compatibility — some MCP clients (e.g. Splunk AITK) don't resend the session header on
+# follow-up requests, which a stateful server rejects with "400 Bad Request: Missing session ID".
+MCP_STATELESS = os.environ.get("MCP_STATELESS", "true").lower() == "true"
+# JSON responses instead of SSE (text/event-stream). Default true: some MCP clients (e.g. Splunk
+# AITK) json.loads the body directly and choke on an SSE stream ("Expecting value: line 1 column 1").
+MCP_JSON_RESPONSE = os.environ.get("MCP_JSON_RESPONSE", "true").lower() == "true"
 
 AUTH_TOKEN = _resolve_secret("AUTH_TOKEN", "AUTH_TOKEN_SECRET_ARN", REGION)
 SEARCH_API_KEY = _resolve_secret("SEARCH_API_KEY", "SEARCH_API_KEY_SECRET_ARN", REGION)
@@ -180,7 +191,7 @@ async def _health(_request):
 
 
 # Streamable-HTTP ASGI app, with an unauthenticated health route + bearer auth on the rest.
-app = mcp.http_app(path=MCP_PATH)
+app = mcp.http_app(path=MCP_PATH, stateless_http=MCP_STATELESS, json_response=MCP_JSON_RESPONSE)
 app.router.routes.append(Route("/health", _health, methods=["GET"]))
 app.add_middleware(BearerAuthMiddleware)
 
