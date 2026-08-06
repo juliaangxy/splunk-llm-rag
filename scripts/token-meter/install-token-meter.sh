@@ -95,9 +95,14 @@ if is_local_host "${METRIC_HOST}"; then
 else
   log "Metric host ${METRIC_HOST} is remote — shipping to its HEC (index + HEC must already exist there)"
   [[ -n "${HEC_TOKEN_ARG}" ]] || { error "--hec-token is required for a remote --metric-host (run this installer on ${METRIC_HOST} first to create + read it)"; exit 1; }
-  export HEC_URL="https://${METRIC_HOST}:${HEC_PORT}/services/collector/event"
-  export HEC_TOKEN="${HEC_TOKEN_ARG}"
-  export HEC_INDEX="${TOKEN_METRICS_INDEX}"
+  # PERSIST the destination in the routes file (+ self-heal timer) rather than only baking a
+  # transient HEC_URL into the systemd unit. A later bare `start-token-meter-proxies.sh` (a crash
+  # recovery, a manual restart, or another installer run) would otherwise drop that env and fall
+  # back to token-meter.env's LOCAL HEC — silently shipping metrics to this host instead of the
+  # remote one. The routes file lives on disk, so every restart keeps the correct destination.
+  TOKEN_METER_DEFAULT_HOST="${METRIC_HOST}" SPLUNK_HEC_TOKEN="${HEC_TOKEN_ARG}" \
+    HEC_PORT="${HEC_PORT}" TOKEN_METRICS_INDEX="${TOKEN_METRICS_INDEX}" \
+    bash "${SCRIPT_DIR}/configure-token-meter-routes.sh"
   bash "${SCRIPT_DIR}/start-token-meter-proxies.sh"
 fi
 
