@@ -138,6 +138,60 @@ eval "$(aws secretsmanager get-secret-value --region "$REGION" --secret-id "$PRE
   --query SecretString --output text | jq -r 'to_entries[] | "export \(.key)=\(.value|@sh)"')"
 ```
 
+## Updating the Splunk apps (`scripts/upgrade-apps.sh`)
+
+In-place upgrade of the Splunk apps — **cloud-connect, AITK, DSDL, PSC** — plus DSDL container-image
+reconciliation. The script adapts to **where you run it**:
+
+| Run it… | What it does |
+|---|---|
+| **Outside the VM** (your laptop / a repo checkout) | Stages the local `apps/` packages up to S3, then stops — there's no local Splunk to install into. The instances install them on their next run. |
+| **On the VM** (an instance, directly or via SSM) | Installs from S3 into the local Splunk. No staging. |
+
+Context is auto-detected (on-instance markers `/opt/splunk-ai/bootstrap.env` / `/opt/splunk`); force
+it with `RUN_CONTEXT=vm|local`.
+
+Two guarantees on the install path:
+- **cloud-connect installs before AITK** (AITK depends on it), regardless of `--apps` order — asking
+  for `aitk` implicitly pulls in `cc`. The bootstrap installer (`08-apps.sh`) enforces the same order.
+- **Version gate** — each app is (re)installed only when the candidate package's `app.conf` version
+  is **strictly newer** than what's installed; equal/older is skipped. `--force` overrides.
+
+### From your laptop, end to end
+
+Drop new app packages into `apps/`, then:
+
+```bash
+# 1) stage local apps -> S3 (dry-run first to preview the sync)
+LICENSE_BUCKET=ai-splunk-license-bucket ./scripts/upgrade-apps.sh --dry-run
+LICENSE_BUCKET=ai-splunk-license-bucket ./scripts/upgrade-apps.sh
+
+# 2) install on every instance via SSM — discovered by tag, no IP/SSH/key needed
+REGION=ap-southeast-1
+IDS=$(aws ec2 describe-instances --region "$REGION" \
+  --filters "Name=tag:SplunkAiRole,Values=gpu-host,search-head" \
+            "Name=instance-state-name,Values=running" \
+  --query 'Reservations[].Instances[].InstanceId' --output text)
+aws ssm send-command --region "$REGION" --instance-ids $IDS \
+  --document-name AWS-RunShellScript \
+  --parameters 'commands=["sudo /opt/splunk-ai/scripts/upgrade-apps.sh"]'
+```
+
+Files move **laptop → S3 → instance** (each instance pulls from the bucket), so staging never needs
+an instance IP. Only the install *trigger* reaches the box, and SSM addresses it by instance id
+(found via the `SplunkAiRole` tag) — no SSH key or open port either.
+
+### On an instance directly
+
+```bash
+sudo /opt/splunk-ai/scripts/upgrade-apps.sh              # cc,aitk,dsdl,psc — only what's newer
+sudo /opt/splunk-ai/scripts/upgrade-apps.sh --apps aitk  # just AITK (pulls in cc first)
+sudo /opt/splunk-ai/scripts/upgrade-apps.sh --dry-run    # show install/skip decisions, change nothing
+sudo /opt/splunk-ai/scripts/upgrade-apps.sh --force      # reinstall even if not newer
+```
+
+Flags: `--apps <cc,aitk,dsdl,psc>`, `--stage`/`--no-stage`, `--apps-dir DIR`, `--force`, `--dry-run`.
+
 # Platform components
 
 Beyond the base two-instance deploy, the platform ships these components — each self-contained in
@@ -260,6 +314,30 @@ echo "Request Timeout: 200"
 echo "API Key        : $PROXY_API_KEY"
 echo "Model          : granite-3.1-2b-instruct"
 ```
+
+If you don't have `$PROXY_API_KEY` set, read it on the GPU host (it's the bearer token the metered
+proxy requires; the raw `:8001` endpoint has no key):
+```bash
+sudo grep '^PROXY_API_KEY=' /opt/splunk-ai/token-meter.env   # also in Secrets Manager <prefix>/<env>
+```
+
+**Test the endpoint with curl** — the same call the AITK form makes (a metered vLLM request; Request
+Timeout 200 → `--max-time 200`, API Key → `Authorization: Bearer`):
+```bash
+curl -sk --max-time 200 http://$GPU_PRIVATE_IP:8100/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $PROXY_API_KEY" \
+  -d '{"model":"granite-3.1-2b-instruct","messages":[{"role":"user","content":"say hi"}],"stream":false}'
+```
+
+Notes that trip people up:
+- **Model names differ by backend.** vLLM's served name is `granite-3.1-2b-instruct` (on `:8100`);
+  Ollama tags are e.g. `granite-3.1-2b:latest` / `foundation-sec-8b:latest` (on `:8101`, **no** API
+  key). Confirm what's actually served with `curl http://$GPU_PRIVATE_IP:8001/v1/models` (vLLM) or
+  `ollama list` (Ollama) — a wrong tag returns `model ... not found` and nothing is metered.
+- **The proxy must be running.** `:8100` (vLLM) and `:8101` (Ollama) are separate systemd units;
+  start them with `start-token-meter-proxies.sh`, setting **both** `VLLM_UPSTREAM_URL` and
+  `OLLAMA_UPSTREAM_URL` to bring up both (leaving one empty skips that proxy).
 
 ### Token counting / metering
 
