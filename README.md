@@ -15,7 +15,7 @@ VPC**:
 - **`cloud`** environment — full internet egress.
 - **`airgapped`** environment — same VPC, but **no internet egress**: every artifact comes
   from S3 and every image from ECR via VPC endpoints. It stays directly reachable on 22/8000
-  for convenience (see *How the airgap works*).
+  for convenience (see *How the airgap works*).`[WIP]`
 
 ## Architecture
 
