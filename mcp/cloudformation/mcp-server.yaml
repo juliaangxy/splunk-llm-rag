@@ -9,7 +9,9 @@ Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label: {default: Networking}
-        Parameters: [ExistingVpcId, ExistingIgwId, VpcCidr, SubnetCidr, SplunkCidr, AllowInternetAccess, McpPort]
+        Parameters: [ExistingVpcId, ExistingIgwId, VpcCidr, SubnetCidr, SplunkCidr, SshCidr, AllowInternetAccess, McpPort]
+      - Label: {default: Load balancer (dual-reachable endpoint for AITK + AgentCore)}
+        Parameters: [CreateLoadBalancer, AgentLaunchpadCidr, SplunkMcpInstanceId, SplunkMcpSecurityGroupId, SplunkMcpPort]
       - Label: {default: MCP capabilities}
         Parameters: [BedrockKnowledgeBaseId, BedrockRegion, WebSearchProvider, WebSearchApiKey, SearxngUrl]
       - Label: {default: Instance}
@@ -56,6 +58,45 @@ Parameters:
     Type: Number
     Default: 8000
     Description: TCP port the MCP server listens on.
+  CreateLoadBalancer:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Create an internet-facing Network Load Balancer (TCP passthrough) in front of the MCP server so
+      ONE endpoint is reachable from BOTH the in-VPC Splunk search head (AITK connection setup / tool
+      enumeration) AND external Bedrock AgentCore (agent runtime). This is needed because a raw EC2
+      public IP cannot be reached from inside the same VPC (AWS "hairpin" — an in-VPC client only
+      reaches the instance's PRIVATE IP), while AgentCore (outside the VPC) can only reach a PUBLIC
+      endpoint — so no single instance IP works for both. The NLB passes TCP straight through (keeps
+      the MCP server's own TLS; no ACM certificate/domain required) and, with client-IP preservation
+      turned off, is reachable from clients inside the VPC as well as the internet. Use the
+      McpLoadBalancerEndpoint output as the custom MCP connection URL.
+  AgentLaunchpadCidr:
+    Type: String
+    Default: ''
+    Description: >-
+      Splunk AI Toolkit **Agent Launchpad** egress IP for your region, as a /32 (e.g.
+      13.213.186.218/32 for ap-southeast-1), allowed to reach the load balancer. Find the per-region
+      IP in the AI Toolkit Agent Launchpad docs. Only used when CreateLoadBalancer=true. Add more
+      regions later with utils/whitelist-agentcore-ips.sh (point it at the LB security group).
+  SplunkMcpInstanceId:
+    Type: String
+    Default: ''
+    Description: >-
+      OPTIONAL. Instance id running Splunk's OWN MCP (the `splunk_run_query` tools) — usually the
+      search head / GPU host. Set it (with CreateLoadBalancer=true) to also front that MCP through
+      the SAME NLB on SplunkMcpPort, so `self_mcp` is dual-reachable too. Leave empty to skip.
+  SplunkMcpSecurityGroupId:
+    Type: String
+    Default: ''
+    Description: >-
+      The security group of SplunkMcpInstanceId, so the template can allow the NLB inbound on
+      SplunkMcpPort. Required when SplunkMcpInstanceId is set (that SG lives in another stack).
+  SplunkMcpPort:
+    Type: Number
+    Default: 8089
+    Description: Port of Splunk's MCP (the management port, always HTTPS). Used only with SplunkMcpInstanceId.
   BedrockKnowledgeBaseId:
     Type: String
     Default: ''
@@ -131,6 +172,17 @@ Conditions:
   HasBedrockRegion: !Not [!Equals [!Ref BedrockRegion, '']]
   SelfSignedTls: !Equals [!Ref TlsMode, 'self-signed']
   UseS3Code: !Not [!Equals [!Ref CodeS3Bucket, '']]
+  CreateLb: !Equals [!Ref CreateLoadBalancer, 'true']
+  HasAgentLaunchpadCidr: !Not [!Equals [!Ref AgentLaunchpadCidr, '']]
+  LbSplunkIngress: !And [!Condition CreateLb, !Condition HasSplunkCidr]
+  LbAgentIngress: !And [!Condition CreateLb, !Condition HasAgentLaunchpadCidr]
+  LbSshIngress: !And [!Condition CreateLb, !Condition HasSshCidr]
+  HasSplunkMcp: !Not [!Equals [!Ref SplunkMcpInstanceId, '']]
+  CreateSplunkMcpLb: !And [!Condition CreateLb, !Condition HasSplunkMcp]
+  SplunkMcpTargetSg: !And [!Condition CreateSplunkMcpLb, !Not [!Equals [!Ref SplunkMcpSecurityGroupId, '']]]
+  SplunkMcpSplunkIngress: !And [!Condition CreateSplunkMcpLb, !Condition HasSplunkCidr]
+  SplunkMcpAgentIngress: !And [!Condition CreateSplunkMcpLb, !Condition HasAgentLaunchpadCidr]
+  SplunkMcpSshIngress: !And [!Condition CreateSplunkMcpLb, !Condition HasSshCidr]
 
 Rules:
   RequireIgwForExistingVpc:
@@ -245,6 +297,258 @@ Resources:
       ToPort: 22
       CidrIp: !Ref SshCidr
       Description: SSH from operator IP
+
+  # ---- Load balancer (optional) --------------------------------------------------------
+  # Internet-facing NLB doing TCP passthrough on the MCP port. It gives ONE endpoint reachable
+  # from both the in-VPC search head and external AgentCore (see CreateLoadBalancer). Access is
+  # allow-listed on the LB's own security group; with client-IP preservation off, the MCP instance
+  # sees traffic from the LB (allowed via IngressFromLb) and the LB is reachable from inside the VPC.
+  IngressFromLb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: CreateLb
+    Properties:
+      GroupId: !Ref McpSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref McpPort
+      ToPort: !Ref McpPort
+      SourceSecurityGroupId: !Ref LbSecurityGroup
+      Description: NLB to MCP target
+
+  LbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: CreateLb
+    Properties:
+      GroupDescription: !Sub 'MCP load balancer ${AWS::StackName} - inbound on the MCP port'
+      VpcId: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
+      SecurityGroupEgress:
+        - {IpProtocol: '-1', CidrIp: 0.0.0.0/0, Description: 'To MCP targets'}
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-lb-sg'}]
+
+  LbIngressFromSplunk:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: LbSplunkIngress
+    Properties:
+      GroupId: !Ref LbSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref McpPort
+      ToPort: !Ref McpPort
+      CidrIp: !Ref SplunkCidr
+      Description: Splunk search head (AITK connection setup / tool enumeration) to NLB
+
+  LbIngressFromAgentLaunchpad:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: LbAgentIngress
+    Properties:
+      GroupId: !Ref LbSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref McpPort
+      ToPort: !Ref McpPort
+      CidrIp: !Ref AgentLaunchpadCidr
+      Description: Bedrock AgentCore (AI Toolkit Agent Launchpad) to NLB
+
+  LbIngressFromSsh:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: LbSshIngress
+    Properties:
+      GroupId: !Ref LbSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref McpPort
+      ToPort: !Ref McpPort
+      CidrIp: !Ref SshCidr
+      Description: Operator IP to NLB (testing)
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Condition: CreateLb
+    Properties:
+      Type: network
+      Scheme: internet-facing
+      Subnets: [!Ref Subnet]
+      SecurityGroups: [!Ref LbSecurityGroup]
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-nlb'}]
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: CreateLb
+    Properties:
+      VpcId: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
+      Protocol: TCP
+      Port: !Ref McpPort
+      TargetType: instance
+      Targets:
+        - Id: !Ref McpInstance
+      TargetGroupAttributes:
+        # OFF so an internet-facing NLB is reachable from inside the VPC too, and the target
+        # trusts the LB by its security group rather than by preserved client IPs.
+        - {Key: preserve_client_ip.enabled, Value: 'false'}
+        - {Key: deregistration_delay.timeout_seconds, Value: '30'}
+      HealthCheckProtocol: TCP
+      HealthCheckPort: traffic-port
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-tg'}]
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: CreateLb
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: TCP
+      Port: !Ref McpPort
+      DefaultActions:
+        - {Type: forward, TargetGroupArn: !Ref TargetGroup}
+
+  # ---- Private-DNS override (so in-VPC callers reach the NLB by its PRIVATE IP) ---------
+  # An internet-facing NLB's DNS name resolves to its PUBLIC IPs, which in-VPC clients can't reach
+  # (hairpin) — and a private-zone ALIAS to it still returns the public IPs. So: a private hosted
+  # zone named after the NLB, with a plain A record to the NLB's PRIVATE IP. The Lambda just reads
+  # that private IP from the NLB's ENIs (CloudFormation can't). AgentCore keeps resolving the name
+  # publicly; the in-VPC search head resolves it privately. One URL, both sides reach it.
+  NlbIpResolverRole:
+    Type: AWS::IAM::Role
+    Condition: CreateLb
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: [{Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: sts:AssumeRole}]
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: describe-enis
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement: [{Effect: Allow, Action: ec2:DescribeNetworkInterfaces, Resource: '*'}]
+
+  NlbIpResolverFn:
+    Type: AWS::Lambda::Function
+    Condition: CreateLb
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt NlbIpResolverRole.Arn
+      Code:
+        ZipFile: |
+          import json, urllib.request, boto3
+          def send(event, status, data=None, reason=None):
+              body = json.dumps({"Status": status, "Reason": reason or "see CloudWatch logs",
+                  "PhysicalResourceId": event.get("PhysicalResourceId") or "nlb-ip-resolver",
+                  "StackId": event["StackId"], "RequestId": event["RequestId"],
+                  "LogicalResourceId": event["LogicalResourceId"], "Data": data or {}}).encode()
+              req = urllib.request.Request(event["ResponseURL"], data=body, method="PUT",
+                  headers={"content-type": "", "content-length": str(len(body))})
+              urllib.request.urlopen(req)
+          def handler(event, context):
+              try:
+                  if event["RequestType"] == "Delete":
+                      return send(event, "SUCCESS")
+                  full = event["ResourceProperties"]["LoadBalancerFullName"]  # net/<name>/<id>
+                  enis = boto3.client("ec2").describe_network_interfaces(
+                      Filters=[{"Name": "description", "Values": ["ELB " + full]}])
+                  ips = sorted({ni["PrivateIpAddress"] for ni in enis["NetworkInterfaces"]
+                                if ni.get("PrivateIpAddress")})
+                  if not ips:
+                      return send(event, "FAILED", reason="no ENIs found for " + full)
+                  return send(event, "SUCCESS", {"PrivateIps": ",".join(ips)})
+              except Exception as e:
+                  return send(event, "FAILED", reason=str(e))
+
+  NlbPrivateIps:
+    Type: Custom::NlbPrivateIps
+    Condition: CreateLb
+    DependsOn: Listener
+    Properties:
+      ServiceToken: !GetAtt NlbIpResolverFn.Arn
+      LoadBalancerFullName: !GetAtt LoadBalancer.LoadBalancerFullName
+
+  PrivateDnsZone:
+    Type: AWS::Route53::HostedZone
+    Condition: CreateLb
+    Properties:
+      Name: !GetAtt LoadBalancer.DNSName
+      HostedZoneConfig: {Comment: !Sub 'In-VPC override of the ${AWS::StackName} NLB to its private IP'}
+      VPCs:
+        - {VPCId: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId], VPCRegion: !Ref 'AWS::Region'}
+
+  PrivateDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateLb
+    Properties:
+      HostedZoneId: !Ref PrivateDnsZone
+      Name: !GetAtt LoadBalancer.DNSName
+      Type: A
+      TTL: '60'
+      ResourceRecords: !Split [',', !GetAtt NlbPrivateIps.PrivateIps]
+
+  # ---- Splunk's own MCP on the same NLB (optional; SplunkMcpInstanceId) -----------------
+  SplunkMcpTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: CreateSplunkMcpLb
+    Properties:
+      VpcId: !If [CreateVpc, !Ref Vpc, !Ref ExistingVpcId]
+      Protocol: TCP
+      Port: !Ref SplunkMcpPort
+      TargetType: instance
+      Targets:
+        - Id: !Ref SplunkMcpInstanceId
+      TargetGroupAttributes:
+        - {Key: preserve_client_ip.enabled, Value: 'false'}
+        - {Key: deregistration_delay.timeout_seconds, Value: '30'}
+      HealthCheckProtocol: TCP
+      HealthCheckPort: traffic-port
+      Tags: [{Key: Name, Value: !Sub '${AWS::StackName}-splunk-mcp-tg'}]
+
+  SplunkMcpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: CreateSplunkMcpLb
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: TCP
+      Port: !Ref SplunkMcpPort
+      DefaultActions:
+        - {Type: forward, TargetGroupArn: !Ref SplunkMcpTargetGroup}
+
+  SplunkMcpTargetSgIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: SplunkMcpTargetSg
+    Properties:
+      GroupId: !Ref SplunkMcpSecurityGroupId
+      IpProtocol: tcp
+      FromPort: !Ref SplunkMcpPort
+      ToPort: !Ref SplunkMcpPort
+      SourceSecurityGroupId: !Ref LbSecurityGroup
+      Description: NLB to Splunk MCP
+
+  LbSplunkMcpIngressFromSplunk:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: SplunkMcpSplunkIngress
+    Properties:
+      GroupId: !Ref LbSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref SplunkMcpPort
+      ToPort: !Ref SplunkMcpPort
+      CidrIp: !Ref SplunkCidr
+      Description: Splunk search head to NLB (Splunk MCP)
+
+  LbSplunkMcpIngressFromAgentLaunchpad:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: SplunkMcpAgentIngress
+    Properties:
+      GroupId: !Ref LbSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref SplunkMcpPort
+      ToPort: !Ref SplunkMcpPort
+      CidrIp: !Ref AgentLaunchpadCidr
+      Description: Bedrock AgentCore (Agent Launchpad) to NLB (Splunk MCP)
+
+  LbSplunkMcpIngressFromSsh:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: SplunkMcpSshIngress
+    Properties:
+      GroupId: !Ref LbSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref SplunkMcpPort
+      ToPort: !Ref SplunkMcpPort
+      CidrIp: !Ref SshCidr
+      Description: Operator IP to NLB (Splunk MCP)
 
   # ---- Secrets -------------------------------------------------------------------------
   AuthTokenSecret:
@@ -434,11 +738,33 @@ Resources:
 
 Outputs:
   McpEndpoint:
-    Description: Point MCP clients (with the bearer token) at this URL.
+    Description: >-
+      Direct-to-instance MCP URL (bearer token required). Good for in-VPC clients via the PRIVATE IP.
+      When CreateLoadBalancer=true, use McpLoadBalancerEndpoint instead for AITK + AgentCore.
     Value: !Sub
       - '${Scheme}://${Host}:${McpPort}/mcp'
       - Scheme: !If [SelfSignedTls, 'https', 'http']
         Host: !If [EnableInternet, !Ref ElasticIp, !GetAtt McpInstance.PrivateIp]
+  McpLoadBalancerEndpoint:
+    Condition: CreateLb
+    Description: >-
+      The dual-reachable MCP endpoint — use THIS as the AITK custom MCP connection URL. Reachable from
+      the in-VPC search head (tool enumeration) and from external AgentCore (agent runtime). The
+      matching private hosted zone (in-VPC → NLB private IP) is created automatically.
+    Value: !Sub
+      - '${Scheme}://${Host}:${McpPort}/mcp'
+      - Scheme: !If [SelfSignedTls, 'https', 'http']
+        Host: !GetAtt LoadBalancer.DNSName
+  SplunkMcpLoadBalancerEndpoint:
+    Condition: CreateSplunkMcpLb
+    Description: The AITK `self_mcp` connection URL — Splunk's own MCP fronted by the same NLB.
+    Value: !Sub
+      - 'https://${Host}:${SplunkMcpPort}/services/mcp'
+      - Host: !GetAtt LoadBalancer.DNSName
+  McpLoadBalancerSecurityGroupId:
+    Condition: CreateLb
+    Description: The LB security group — allow-list additional Agent Launchpad IPs here (whitelist script).
+    Value: !Ref LbSecurityGroup
   AuthTokenSecretArn:
     Description: Secrets Manager ARN holding the bearer token.
     Value: !Ref AuthTokenSecret

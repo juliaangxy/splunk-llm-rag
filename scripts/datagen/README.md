@@ -121,6 +121,41 @@ index=* incident_id=INC-2026-0104        | pivot a log to its postmortem
 
 ---
 
+## 1c. Domain generators for agents — `security_datagen.py` / `app_datagen.py` / `infra_datagen.py`
+
+Richer, **structured** telemetry for the SOC/SRE agents in [`agents/`](../../agents) — threat
+detection, triage, and troubleshooting. They ship to the same `app`/`infra`/`security` indexes and
+HEC token as above (via the shared [`datagen_common.py`](datagen_common.py) engine), but emit
+correlated multi-stage chains with agent-friendly fields:
+
+| Generator | Index | Tags each chain with | For |
+|---|---|---|---|
+| `security_datagen.py` | `security` | `threat_id`, `attack_stage`, `mitre_technique`, `severity` | threat detection |
+| `app_datagen.py` | `app` | `app_incident_id`, `phase`, `status`/`latency_ms`/`deploy_version`/`upstream` | troubleshooting / triage |
+| `infra_datagen.py` | `infra` | `infra_incident_id`, `phase`, `cpu_pct`/`mem_pct`/`disk_pct`/`node`/`reason` | troubleshooting |
+
+Some chains **share entities across indexes** (e.g. `k8s-node-3`, `pg-primary-1`) so a triage agent
+can join an infra root cause to its app symptom. Same flags as the engine (`--mode`,
+`--duration-min`, `--hec-url/--hec-token` or `--hec-targets`), plus **`--dry-run`** to print events
+as JSON without a Splunk:
+
+```bash
+# eyeball the data (no Splunk needed):
+python3 security_datagen.py --dry-run --duration-min 60 | head
+
+# backfill 60 min of all three into Splunk HEC (reuse the datagen token):
+export HEC_URL=https://<splunk>:8088/services/collector/event HEC_TOKEN=<datagen-token>
+for g in security app infra; do python3 ${g}_datagen.py --mode backfill --duration-min 60; done
+
+# or run one live (rotating fresh chains):
+python3 infra_datagen.py --mode live --interval-sec 30
+```
+
+See [`agents/README.md`](../../agents/README.md) for the system prompts + SPL playbooks that consume
+this data.
+
+---
+
 ## 2. Bedrock knowledge base — `setup-bedrock-kb.sh`
 
 Provisions (idempotently): stages the repo's [`kb-documents/`](../../kb-documents) case notes into

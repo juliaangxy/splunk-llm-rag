@@ -111,6 +111,41 @@ if ${DISCOVER_KB} && [[ -z "${BedrockKnowledgeBaseId:-}" ]]; then
   fi
 fi
 
+# --- Agent Launchpad IP: resolve from the CLOUD CONNECT region (NOT the deployment region) --------
+# The Agent Launchpad egress IP that must reach the LB is determined by where AITK's agent runtime /
+# Cloud Connect runs — the CLOUD CONNECT region — which is OFTEN DIFFERENT from where the Splunk /
+# MCP stack is deployed. (Real case: Splunk in ap-southeast-1, Cloud Connect in us-east-1 — so the LB
+# had to allow the us-east-1 IP, not ap-southeast-1.) So we resolve from CloudConnectRegion and never
+# silently fall back to REGION. Set CloudConnectRegion in the env, or AgentLaunchpadCidr to override.
+if [[ "${CreateLoadBalancer:-}" == "true" && -z "${AgentLaunchpadCidr:-}" ]]; then
+  ALP_REGION="${CloudConnectRegion:-${AgentLaunchpadRegion:-}}"   # AgentLaunchpadRegion = back-compat alias
+  ALP_MAP="${SCRIPT_DIR}/../utils/agentcore-region-ips.tsv"
+  if [[ -z "${ALP_REGION}" ]]; then
+    warn "CloudConnectRegion is not set. The Agent Launchpad IP depends on your CLOUD CONNECT region,"
+    warn "which is often NOT the deployment region (${REGION}). Set CloudConnectRegion in ${ENV_FILE##*/}"
+    warn "(e.g. CloudConnectRegion=us-east-1), or set AgentLaunchpadCidr explicitly — skipping it for now."
+  elif [[ ! -f "${ALP_MAP}" ]]; then
+    warn "region->IP map ${ALP_MAP} not found — set AgentLaunchpadCidr, or run utils/fetch-agentcore-ips.sh"
+  else
+    alp_ip="$(awk -v r="${ALP_REGION}" '$1==r && $1 !~ /^#/{print $2; exit}' "${ALP_MAP}")"
+    if [[ -n "${alp_ip}" ]]; then
+      AgentLaunchpadCidr="${alp_ip}/32"
+      log "resolved AgentLaunchpadCidr=${AgentLaunchpadCidr} (Cloud Connect region ${ALP_REGION}, from ${ALP_MAP##*/})"
+    else
+      warn "no Agent Launchpad IP for Cloud Connect region '${ALP_REGION}' in ${ALP_MAP##*/} — set AgentLaunchpadCidr, or run utils/fetch-agentcore-ips.sh"
+    fi
+  fi
+fi
+
+# --- Splunk MCP on the same NLB: auto-resolve its SG from the instance id if not given ---------
+if [[ -n "${SplunkMcpInstanceId:-}" && -z "${SplunkMcpSecurityGroupId:-}" ]]; then
+  SplunkMcpSecurityGroupId="$(aws ec2 describe-instances --region "${REGION}" \
+    --instance-ids "${SplunkMcpInstanceId}" \
+    --query 'Reservations[0].Instances[0].SecurityGroups[0].GroupId' --output text 2>/dev/null || true)"
+  [[ "${SplunkMcpSecurityGroupId}" == "None" ]] && SplunkMcpSecurityGroupId=""
+  [[ -n "${SplunkMcpSecurityGroupId}" ]] && log "resolved SplunkMcpSecurityGroupId=${SplunkMcpSecurityGroupId}"
+fi
+
 # --- Assemble parameter overrides (only pass the ones that are set) -------------------------
 OVERRIDES=()
 add() { [[ -n "${2:-}" ]] && OVERRIDES+=("$1=$2"); return 0; }
@@ -122,6 +157,11 @@ add SplunkCidr             "${SplunkCidr:-}"
 add SshCidr                "${SshCidr:-}"
 add AllowInternetAccess    "${AllowInternetAccess:-}"
 add McpPort                "${McpPort:-}"
+add CreateLoadBalancer     "${CreateLoadBalancer:-}"
+add AgentLaunchpadCidr     "${AgentLaunchpadCidr:-}"
+add SplunkMcpInstanceId    "${SplunkMcpInstanceId:-}"
+add SplunkMcpSecurityGroupId "${SplunkMcpSecurityGroupId:-}"
+add SplunkMcpPort          "${SplunkMcpPort:-}"
 add BedrockKnowledgeBaseId "${BedrockKnowledgeBaseId:-}"
 add BedrockRegion          "${BedrockRegion:-}"
 add WebSearchProvider      "${WebSearchProvider:-}"

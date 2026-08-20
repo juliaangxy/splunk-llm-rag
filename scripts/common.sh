@@ -96,7 +96,13 @@ wait_for_port() {
 
   log "Waiting for ${host}:${port} (timeout ${timeout_seconds}s)"
 
-  while ! timeout 1 bash -c "cat < /dev/null > /dev/tcp/${host}/${port}" 2>/dev/null; do
+  # Portable 1s connect probe: GNU `timeout` (Linux) or `gtimeout` (macOS + coreutils) when present,
+  # else a bare bash /dev/tcp connect — stock macOS has no `timeout`, and a loopback port refuses
+  # instantly so the cap isn't needed there.
+  local _to=""
+  if command -v timeout >/dev/null 2>&1; then _to="timeout 1"
+  elif command -v gtimeout >/dev/null 2>&1; then _to="gtimeout 1"; fi
+  while ! ${_to} bash -c "cat < /dev/null > /dev/tcp/${host}/${port}" 2>/dev/null; do
     if [[ "${elapsed}" -ge "${timeout_seconds}" ]]; then
       error "Timed out waiting for ${host}:${port}"
       return 1

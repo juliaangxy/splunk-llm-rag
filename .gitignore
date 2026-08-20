@@ -48,3 +48,6 @@ __pycache__/
 # ===== Misc local docs =====
 LLM setup.pdf
 mcp/mcp.env
+
+# ===== Generated agent run reports (keep local, don't commit) =====
+agents/reports/

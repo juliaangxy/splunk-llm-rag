@@ -7,11 +7,19 @@ set -euo pipefail
 #
 # Reads HEC settings from /opt/splunk-ai/token-meter.env (written by 11-token-metrics.sh);
 # env values (HEC_URL/HEC_TOKEN, OLLAMA_UPSTREAM_URL/VLLM_UPSTREAM_URL) override the file.
+#
+# How each proxy is launched (first that fits): a systemd unit (host python, Restart=always) on
+# systemd hosts; else a backgrounded `python3 app.py` (no systemd — e.g. macOS/dev; PID+log under
+# TOKEN_METER_RUN_DIR, no auto-restart); else a container image (TOKEN_METER_PROXY_IMAGE).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../common.sh"
 
-require_root
+# systemd + container paths need root; the no-systemd host-python fallback does not — so only
+# require root when systemd is present (keeps it runnable unprivileged on macOS/dev).
+if command -v systemctl >/dev/null 2>&1; then
+  require_root
+fi
 
 # --- User-definable endpoints -------------------------------------------------
 # Both the MODEL base URLs (what the proxy forwards to) and the METRIC RECEIVER
@@ -64,6 +72,31 @@ LOG_COMPLETION="${LOG_COMPLETION:-false}"
 MAX_CONTENT_CHARS="${MAX_CONTENT_CHARS:-2000}"
 
 PROXY_APP="${PROXY_APP:-/opt/splunk-ai/scripts/token-meter/token-meter-proxy/app.py}"
+# PID + log directory for the no-systemd (backgrounded) host-python fallback (e.g. macOS/dev).
+TOKEN_METER_RUN_DIR="${TOKEN_METER_RUN_DIR:-/tmp/token-meter}"
+
+# No-systemd fallback: run the proxy as a plain backgrounded host process (e.g. macOS/dev). Records
+# a PID + log under TOKEN_METER_RUN_DIR so a re-run can stop the previous one; no auto-restart.
+run_proxy_bg() {
+  local name="$1" listen="$2" upstream="$3" label="$4" api_key="${5:-}"
+  mkdir -p "${TOKEN_METER_RUN_DIR}"
+  local pidf="${TOKEN_METER_RUN_DIR}/${name}.pid" logf="${TOKEN_METER_RUN_DIR}/${name}.log"
+  # Stop a previous instance we started (best-effort).
+  if [[ -f "${pidf}" ]]; then
+    local oldpid; oldpid="$(cat "${pidf}" 2>/dev/null || true)"
+    [[ -n "${oldpid}" ]] && kill "${oldpid}" 2>/dev/null || true
+    rm -f "${pidf}"
+  fi
+  log "Starting ${name} via host python (no systemd; backgrounded) (:${listen} -> ${upstream}, label=${label})"
+  UPSTREAM_URL="${upstream}" BACKEND_LABEL="${label}" LISTEN_PORT="${listen}" \
+  HEC_URL="${HEC_URL}" HEC_TOKEN="${HEC_TOKEN}" HEC_INDEX="${HEC_INDEX}" \
+  HEC_ROUTES_FILE="${HEC_ROUTES_FILE}" HEC_VERIFY_TLS="false" \
+  PROXY_API_KEY="${api_key}" DEFAULT_APP="${DEFAULT_APP}" \
+  LOG_PROMPT="${LOG_PROMPT}" LOG_COMPLETION="${LOG_COMPLETION}" MAX_CONTENT_CHARS="${MAX_CONTENT_CHARS}" \
+    nohup python3 "${PROXY_APP}" >"${logf}" 2>&1 &
+  echo "$!" > "${pidf}"
+  log "  ${name}: pid $(cat "${pidf}"), log ${logf}  (stop: kill \$(cat ${pidf}))"
+}
 
 run_proxy() {
   local name="$1" listen="$2" upstream="$3" label="$4" api_key="${5:-}"
@@ -71,16 +104,22 @@ run_proxy() {
   # Preferred: run the stdlib proxy from the staged files via host python — no Docker,
   # no registry/ECR, works identically in cloud and airgapped.
   if [[ -f "${PROXY_APP}" ]] && command -v python3 >/dev/null 2>&1; then
-    systemctl stop "${name}" 2>/dev/null || true
-    systemctl reset-failed "${name}" 2>/dev/null || true
-    log "Starting ${name} via host python (:${listen} -> ${upstream}, label=${label})"
-    systemd-run --unit="${name}" --collect --property=Restart=always \
-      --setenv=UPSTREAM_URL="${upstream}" --setenv=BACKEND_LABEL="${label}" --setenv=LISTEN_PORT="${listen}" \
-      --setenv=HEC_URL="${HEC_URL}" --setenv=HEC_TOKEN="${HEC_TOKEN}" --setenv=HEC_INDEX="${HEC_INDEX}" \
-      --setenv=HEC_ROUTES_FILE="${HEC_ROUTES_FILE}" \
-      --setenv=HEC_VERIFY_TLS="false" --setenv=PROXY_API_KEY="${api_key}" --setenv=DEFAULT_APP="${DEFAULT_APP}" \
-      --setenv=LOG_PROMPT="${LOG_PROMPT}" --setenv=LOG_COMPLETION="${LOG_COMPLETION}" --setenv=MAX_CONTENT_CHARS="${MAX_CONTENT_CHARS}" \
-      python3 "${PROXY_APP}"
+    if command -v systemctl >/dev/null 2>&1 && command -v systemd-run >/dev/null 2>&1; then
+      # systemd host: managed unit with Restart=always.
+      systemctl stop "${name}" 2>/dev/null || true
+      systemctl reset-failed "${name}" 2>/dev/null || true
+      log "Starting ${name} via host python + systemd (:${listen} -> ${upstream}, label=${label})"
+      systemd-run --unit="${name}" --collect --property=Restart=always \
+        --setenv=UPSTREAM_URL="${upstream}" --setenv=BACKEND_LABEL="${label}" --setenv=LISTEN_PORT="${listen}" \
+        --setenv=HEC_URL="${HEC_URL}" --setenv=HEC_TOKEN="${HEC_TOKEN}" --setenv=HEC_INDEX="${HEC_INDEX}" \
+        --setenv=HEC_ROUTES_FILE="${HEC_ROUTES_FILE}" \
+        --setenv=HEC_VERIFY_TLS="false" --setenv=PROXY_API_KEY="${api_key}" --setenv=DEFAULT_APP="${DEFAULT_APP}" \
+        --setenv=LOG_PROMPT="${LOG_PROMPT}" --setenv=LOG_COMPLETION="${LOG_COMPLETION}" --setenv=MAX_CONTENT_CHARS="${MAX_CONTENT_CHARS}" \
+        python3 "${PROXY_APP}"
+    else
+      # No systemd (macOS/dev): run app.py as a backgrounded host process.
+      run_proxy_bg "${name}" "${listen}" "${upstream}" "${label}" "${api_key}"
+    fi
     wait_for_port 127.0.0.1 "${listen}" 60
     return 0
   fi

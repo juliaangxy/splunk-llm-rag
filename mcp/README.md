@@ -238,6 +238,96 @@ Set `MCP_JSON_RESPONSE=false` only for a client that specifically wants the SSE 
 - **From the internet:** `AllowInternetAccess=true` opens the port to `0.0.0.0/0` and attaches an
   Elastic IP. The bearer token is the only thing gating access, so keep TLS on.
 
+## Reachability from AITK agents (Bedrock AgentCore)
+
+Splunk AI Toolkit **agents run on AWS Bedrock AgentCore — an AWS-managed network *outside* your
+VPC.** That breaks both the "use the private IP" and the "use the public IP" approaches, because the
+two things that talk to the MCP sit on opposite sides of the VPC boundary:
+
+| Caller | Runs | Can reach |
+|---|---|---|
+| AITK **connection setup** — *Get tools* / *Test connection* | **inside the VPC** (the search head) | only the MCP's **private** IP — an in-VPC host can't reach another instance's *public* IP (AWS "hairpin") |
+| Agent **runtime** — the tool calls | **AgentCore, outside the VPC** | only a **public** endpoint — it can't route to an RFC-1918 private IP |
+
+So no single instance IP works: the private IP fails at runtime, the public IP fails at setup
+("error getting the tools"). Proof + reproducer:
+[`agents/reports/agentcore-mcp-test-report.md`](../agents/reports/agentcore-mcp-test-report.md).
+
+**The fix — one internet-facing Network Load Balancer + a private-DNS override:**
+
+```
+                          ┌──────────────────────── one NLB DNS name ────────────────────────┐
+AITK setup (search head, in-VPC) ─ resolves to NLB PRIVATE IP (Route 53 private zone) ─▶ NLB ─▶ MCP :8000
+Bedrock AgentCore (runtime, external) ─ resolves to NLB PUBLIC IP (public DNS) ─────────▶ NLB ─▶ Splunk MCP :8089
+```
+
+- **NLB, not ALB.** The NLB does **TCP passthrough**, so the MCP server's own HTTPS (self-signed)
+  flows **end-to-end** and the URL is genuinely `https://` — with **no ACM certificate or domain** to
+  manage. An ALB would *terminate* TLS and need a cert matching the hostname (a domain). Clients skip
+  cert verification (`-k`), exactly as when hitting the instance directly.
+- **Private-DNS override.** A Route 53 **private hosted zone** named after the NLB's DNS name,
+  associated with the VPC, with an `A` record to the NLB's **private** IP. In-VPC callers then resolve
+  the NLB name to its private IP (no hairpin); AgentCore resolves the same name publicly. One URL,
+  both sides reach it.
+
+It's all one deploy — `CreateLoadBalancer=true` builds the internet-facing NLB, its security group,
+target group + listener, **and the private-DNS override** (a private hosted zone named after the NLB,
+plus a tiny Lambda that reads the NLB's private IP into an `A` record — the one thing CloudFormation
+can't express natively). To also front **Splunk's own MCP** (`self_mcp`) on the same NLB, set
+`SplunkMcpInstanceId`. `deploy-mcp.sh` auto-resolves the rest:
+
+```bash
+# in mcp/mcp.env:
+CreateLoadBalancer=true
+CloudConnectRegion=us-east-1         # region where AITK Cloud Connect / the agent runtime runs
+# Optional — also expose Splunk's own MCP on :8089 through the same NLB:
+# SplunkMcpInstanceId=i-0123...      # the search head / GPU; its SG auto-resolves
+# then: bash mcp/deploy-mcp.sh
+```
+
+> ⚠️ **The Agent Launchpad IP comes from your CLOUD CONNECT region — usually NOT the deployment
+> region.** AITK's agent runtime egresses from wherever your **Cloud Connect** is (e.g. `us-east-1`),
+> even if your Splunk/MCP stack is in `ap-southeast-1`. Allow-listing the deployment region's IP
+> leaves the agent unable to reach the MCP ("Unable to connect to custom_mcp … after 4 retries").
+> Set **`CloudConnectRegion`** — `deploy-mcp.sh` resolves the IP from *that* region and will **not**
+> silently fall back to the deployment region.
+
+| Auto-resolved | From |
+|---|---|
+| `AgentLaunchpadCidr` | your **`CloudConnectRegion`**, via [`utils/agentcore-region-ips.tsv`](../utils/agentcore-region-ips.tsv) (refresh with [`utils/fetch-agentcore-ips.sh`](../utils/fetch-agentcore-ips.sh)) |
+| `SplunkMcpSecurityGroupId` | the `SplunkMcpInstanceId` instance |
+
+The stack outputs the two AITK connection URLs — **`McpLoadBalancerEndpoint`** (`…:8000/mcp`) and, if
+you set the Splunk MCP, **`SplunkMcpLoadBalancerEndpoint`** (`…:8089/services/mcp`). Add other regions'
+Agent Launchpad IPs later with [`utils/whitelist-agentcore-ips.sh`](../utils/whitelist-agentcore-ips.sh)
+(same map) — point it at the **LB** security group. (Keep those IPs off your base Splunk/MCP security
+groups; they belong only on the LB, and only when you're wiring up agents.)
+
+> **Why `:8089` for `self_mcp`, not `:8000`?** The Splunk MCP's native endpoint
+> (`https://<host>:8089/services/mcp`) is on the **management port — always HTTPS**. Splunk **Web**
+> `:8000` is often HTTP-only, so `…:8000/en-US/splunkd/__raw/services/mcp` can never satisfy AITK's
+> `https://` rule. `SplunkMcpPort` defaults to `8089`.
+
+Verify from an in-VPC host after deploy: `getent hosts <nlb-dns>` returns the **private** IP, and
+`curl -sk https://<nlb-dns>:8000/mcp` returns `401` (reached the MCP; it just needs the token).
+
+In AITK **Create MCP connection**, use the stack-output URLs:
+
+| Connection | URL (stack output) |
+|---|---|
+| custom MCP (this server) | `https://<nlb-dns>:8000/mcp`  ·  `McpLoadBalancerEndpoint` |
+| `self_mcp` (Splunk's MCP) | `https://<nlb-dns>:8089/services/mcp`  ·  `SplunkMcpLoadBalancerEndpoint` |
+
+### Attach the tools to the agents
+
+AITK agents get tools **only** from attached **MCP connections** and **knowledge bases** — there is
+**no built-in Splunk search**. An agent with nothing attached will *hallucinate* tool calls and
+fabricate results (we saw exactly this: invented incident IDs, fake IPs). Once the connections above
+enumerate, attach them — and/or a native Bedrock Knowledge Base connection — to each agent so it can
+actually query Splunk and retrieve from the KB. Verify an agent by feeding it real data
+(`‹SPL› | aiagent agent_name="X" prompt="analyze only these events"`) and checking the output cites
+the real values.
+
 ## Parameters
 
 | Parameter | Default | Notes |
@@ -249,6 +339,8 @@ Set `MCP_JSON_RESPONSE=false` only for a client that specifically wants the SSE 
 | `SplunkCidr` | *(empty)* | Splunk subnet CIDR allowed inbound. |
 | `AllowInternetAccess` | `false` | `true` → open to `0.0.0.0/0` + Elastic IP. |
 | `McpPort` | `8000` | MCP listen port. |
+| `CreateLoadBalancer` | `false` | `true` → add an internet-facing NLB reachable by both the in-VPC search head and external AgentCore (see [Reachability from AITK agents](#reachability-from-aitk-agents-bedrock-agentcore)). |
+| `AgentLaunchpadCidr` | *(empty)* | Your region's Agent Launchpad egress `/32`, allow-listed on the LB. Only used with `CreateLoadBalancer=true`. |
 | `BedrockKnowledgeBaseId` | *(empty)* | KB the retrieve tool queries. |
 | `BedrockRegion` | *(stack region)* | Region of the KB. |
 | `WebSearchProvider` | `tavily` | `searxng` \| `duckduckgo` \| `tavily` \| `brave` \| `none`. |
@@ -267,7 +359,10 @@ Set `MCP_JSON_RESPONSE=false` only for a client that specifically wants the SSE 
   secret's value and restart the service (`systemctl restart mcp-server`).
 - `TlsMode=self-signed` gives HTTPS with an auto-generated cert — clients must **skip cert
   verification** (`curl -k`). For production, front the instance with an **ALB + ACM certificate**
-  (real hostname) or a reverse proxy terminating TLS, and set `TlsMode=none` behind it.
+  (real hostname) or a reverse proxy terminating TLS, and set `TlsMode=none` behind it. (For
+  *AITK-agent* reachability specifically, use the **NLB** in
+  [Reachability from AITK agents](#reachability-from-aitk-agents-bedrock-agentcore) instead — TCP
+  passthrough keeps the self-signed HTTPS end-to-end, so it needs no ACM cert or domain.)
 - Prefer scenario A (private, `SplunkCidr` only) over internet exposure when you can.
 - The instance role grants only `bedrock:Retrieve`/`RetrieveAndGenerate` on knowledge bases and
   `GetSecretValue` on its own secrets — no broad permissions.
